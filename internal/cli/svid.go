@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -14,8 +15,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
 	"github.com/kanywst/omega/internal/server/api"
 )
@@ -26,16 +29,79 @@ func newSVIDCommand() *cobra.Command {
 		Short: "Interact with SPIFFE SVIDs",
 	}
 
-	var socket string
+	var (
+		socket   string
+		fetchOut string
+	)
 	fetch := &cobra.Command{
 		Use:   "fetch",
 		Short: "Fetch an X.509-SVID via the local agent (SPIFFE Workload API)",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			// TODO(W2 #11): connect to Workload API socket, print SVID + bundle.
-			return fmt.Errorf("not implemented yet (W2 #11): socket=%s", socket)
+		RunE: func(c *cobra.Command, _ []string) error {
+			ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
+			defer cancel()
+			src, err := workloadapi.NewX509Source(ctx,
+				workloadapi.WithClientOptions(workloadapi.WithAddr("unix://"+socket)),
+			)
+			if err != nil {
+				return fmt.Errorf("connect to %s: %w", socket, err)
+			}
+			defer src.Close()
+
+			svid, err := src.GetX509SVID()
+			if err != nil {
+				return fmt.Errorf("get svid: %w", err)
+			}
+			bundle, err := src.GetX509BundleForTrustDomain(svid.ID.TrustDomain())
+			if err != nil {
+				return fmt.Errorf("get bundle: %w", err)
+			}
+
+			svidPEM, keyPEM, err := svid.Marshal()
+			if err != nil {
+				return fmt.Errorf("marshal svid: %w", err)
+			}
+			bundlePEM, err := bundle.Marshal()
+			if err != nil {
+				return fmt.Errorf("marshal bundle: %w", err)
+			}
+			notAfter := svid.Certificates[0].NotAfter
+
+			if fetchOut == "" {
+				_, _ = fmt.Fprintf(c.OutOrStdout(), "# spiffe-id: %s\n", svid.ID)
+				_, _ = fmt.Fprintf(c.OutOrStdout(), "# not-after: %s\n", notAfter.Format(time.RFC3339))
+				_, _ = fmt.Fprintln(c.OutOrStdout(), "# svid")
+				_, _ = c.OutOrStdout().Write(svidPEM)
+				_, _ = fmt.Fprintln(c.OutOrStdout(), "# bundle")
+				_, _ = c.OutOrStdout().Write(bundlePEM)
+				_, _ = fmt.Fprintln(c.OutOrStdout(), "# private key")
+				_, _ = c.OutOrStdout().Write(keyPEM)
+				return nil
+			}
+
+			if err := os.MkdirAll(fetchOut, 0o700); err != nil {
+				return err
+			}
+			files := []struct {
+				name string
+				data []byte
+				mode os.FileMode
+			}{
+				{"svid.pem", svidPEM, 0o644},
+				{"bundle.pem", bundlePEM, 0o644},
+				{"key.pem", keyPEM, 0o600},
+			}
+			for _, f := range files {
+				if err := os.WriteFile(filepath.Join(fetchOut, f.name), f.data, f.mode); err != nil {
+					return fmt.Errorf("write %s: %w", f.name, err)
+				}
+			}
+			_, _ = fmt.Fprintf(c.OutOrStdout(), "wrote %s/{svid,bundle,key}.pem (spiffe-id=%s, not-after=%s)\n",
+				fetchOut, svid.ID, notAfter.Format(time.RFC3339))
+			return nil
 		},
 	}
 	fetch.Flags().StringVar(&socket, "socket", "/tmp/omega-agent.sock", "Workload API unix socket")
+	fetch.Flags().StringVar(&fetchOut, "out-dir", "", "directory to write svid.pem / bundle.pem / key.pem (default: stdout)")
 
 	var (
 		serverURL string

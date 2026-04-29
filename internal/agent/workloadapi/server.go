@@ -2,10 +2,11 @@
 // that runs inside `omega agent`.
 //
 // PoC v0.0.1: only FetchX509SVID and FetchX509Bundles are implemented.
-// Each FetchX509SVID call attests the peer via UID, looks up the SPIFFE
-// ID from the agent's mapping, generates an ephemeral key + CSR, and
-// asks the control plane HTTP API to sign it. No cache, no rotation.
-// Cache + auto-refresh land in #11b.
+// FetchX509SVID attests the peer via UID, looks up the SPIFFE ID from
+// the agent's mapping, and serves an X.509-SVID. The first call hits
+// the control plane to issue a fresh certificate; subsequent calls are
+// served from a per-UID cache. The stream stays open and sends a new
+// SVID at the cert's mid-life refresh point.
 package workloadapi
 
 import (
@@ -18,10 +19,11 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	workloadpb "github.com/spiffe/go-spiffe/v2/proto/spiffe/workload"
 	"google.golang.org/grpc/codes"
@@ -37,11 +39,36 @@ import (
 // process info, etc.).
 type Mapping map[uint32]string
 
+// svidEntry is one cached, kernel-attested SVID for a UID.
+type svidEntry struct {
+	spiffeID  string
+	svidDER   []byte
+	bundleDER []byte
+	keyDER    []byte
+	notBefore time.Time
+	notAfter  time.Time
+}
+
+// refreshAt returns the moment past which we should re-issue. We
+// refresh at the midpoint of validity so a workload always holds a
+// cert with at least ~half its lifetime remaining.
+func (e *svidEntry) refreshAt() time.Time {
+	return e.notBefore.Add(e.notAfter.Sub(e.notBefore) / 2)
+}
+
+func (e *svidEntry) stale(now time.Time) bool {
+	return !now.Before(e.refreshAt())
+}
+
 type Server struct {
 	workloadpb.UnimplementedSpiffeWorkloadAPIServer
 	serverURL  string
 	mapping    Mapping
 	httpClient *http.Client
+	now        func() time.Time
+
+	mu    sync.Mutex
+	cache map[uint32]*svidEntry
 }
 
 func NewServer(serverURL string, mapping Mapping) *Server {
@@ -49,6 +76,8 @@ func NewServer(serverURL string, mapping Mapping) *Server {
 		serverURL:  strings.TrimRight(serverURL, "/"),
 		mapping:    mapping,
 		httpClient: http.DefaultClient,
+		now:        time.Now,
+		cache:      map[uint32]*svidEntry{},
 	}
 }
 
@@ -63,33 +92,31 @@ func (s *Server) FetchX509SVID(_ *workloadpb.X509SVIDRequest, stream workloadpb.
 		return status.Errorf(codes.PermissionDenied, "no SVID mapping for uid=%d", creds.UID)
 	}
 
-	resp, key, err := s.requestSVID(ctx, spiffeID)
-	if err != nil {
-		return err
+	for {
+		entry, err := s.getOrRefresh(ctx, creds.UID, spiffeID)
+		if err != nil {
+			return err
+		}
+		if err := stream.Send(&workloadpb.X509SVIDResponse{
+			Svids: []*workloadpb.X509SVID{{
+				SpiffeId:    entry.spiffeID,
+				X509Svid:    entry.svidDER,
+				X509SvidKey: entry.keyDER,
+				Bundle:      entry.bundleDER,
+			}},
+		}); err != nil {
+			return err
+		}
+		wait := time.Until(entry.refreshAt())
+		if wait < time.Second {
+			wait = time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(wait):
+		}
 	}
-
-	svidDER, bundleDER, err := pemToDER(resp.SVID, resp.Bundle)
-	if err != nil {
-		return status.Errorf(codes.Internal, "decode pem: %v", err)
-	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		return status.Errorf(codes.Internal, "marshal key: %v", err)
-	}
-
-	if err := stream.Send(&workloadpb.X509SVIDResponse{
-		Svids: []*workloadpb.X509SVID{{
-			SpiffeId:    spiffeID,
-			X509Svid:    svidDER,
-			X509SvidKey: keyDER,
-			Bundle:      bundleDER,
-		}},
-	}); err != nil {
-		return err
-	}
-	// PoC: send once and end the stream. The client will reconnect to
-	// poll. Cache + rotation arrive in #11b.
-	return nil
 }
 
 func (s *Server) FetchX509Bundles(_ *workloadpb.X509BundlesRequest, stream workloadpb.SpiffeWorkloadAPI_FetchX509BundlesServer) error {
@@ -101,6 +128,50 @@ func (s *Server) FetchX509Bundles(_ *workloadpb.X509BundlesRequest, stream workl
 	return stream.Send(&workloadpb.X509BundlesResponse{
 		Bundles: map[string][]byte{trustDomain: bundleDER},
 	})
+}
+
+// getOrRefresh returns a non-stale SVID for the (uid, spiffeID) pair,
+// reissuing through the control plane if the cached one is missing or
+// past its refresh time. The cache lock is released across the network
+// call so a slow control plane doesn't block other UIDs; the cost is
+// that two concurrent requests for the same fresh-needed entry may
+// both hit the control plane. Acceptable for the PoC.
+func (s *Server) getOrRefresh(ctx context.Context, uid uint32, spiffeID string) (*svidEntry, error) {
+	s.mu.Lock()
+	if entry, ok := s.cache[uid]; ok && entry.spiffeID == spiffeID && !entry.stale(s.now()) {
+		s.mu.Unlock()
+		return entry, nil
+	}
+	s.mu.Unlock()
+
+	resp, key, err := s.requestSVID(ctx, spiffeID)
+	if err != nil {
+		return nil, err
+	}
+	svidDER, bundleDER, err := pemToDER(resp.SVID, resp.Bundle)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "decode pem: %v", err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "marshal key: %v", err)
+	}
+	cert, err := x509.ParseCertificate(svidDER)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "parse svid: %v", err)
+	}
+	entry := &svidEntry{
+		spiffeID:  spiffeID,
+		svidDER:   svidDER,
+		bundleDER: bundleDER,
+		keyDER:    keyDER,
+		notBefore: cert.NotBefore,
+		notAfter:  cert.NotAfter,
+	}
+	s.mu.Lock()
+	s.cache[uid] = entry
+	s.mu.Unlock()
+	return entry, nil
 }
 
 func (s *Server) requestSVID(ctx context.Context, spiffeID string) (*api.IssueSVIDResponse, *ecdsa.PrivateKey, error) {
@@ -168,8 +239,8 @@ func (s *Server) fetchBundle(ctx context.Context) ([]byte, string, error) {
 
 // trustDomainFromCertCN reads the trust domain back from the bundle CA
 // CN. We currently set CN="Omega Local CA"; for the PoC we hard-code
-// "omega.local". In #11b the agent will get the trust domain from a
-// dedicated control plane endpoint.
+// "omega.local". A dedicated control plane endpoint will replace this
+// before v0.1.
 func trustDomainFromCertCN(_ string) string {
 	return "omega.local"
 }
@@ -198,9 +269,4 @@ func pemToDER(svidPEM, bundlePEM string) (svidDER, bundleDER []byte, err error) 
 	return sb.Bytes, bb.Bytes, nil
 }
 
-// Compile-time assertion: Server satisfies the proto interface.
 var _ workloadpb.SpiffeWorkloadAPIServer = (*Server)(nil)
-
-// Quiet the "imported and not used" check in test variants that don't
-// touch fmt directly.
-var _ = fmt.Sprintf
