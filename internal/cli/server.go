@@ -14,13 +14,15 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/kanywst/raftel/internal/server/api"
+	"github.com/kanywst/raftel/internal/server/identity"
 	"github.com/kanywst/raftel/internal/server/storage"
 )
 
 func newServerCommand() *cobra.Command {
 	var (
-		dataDir  string
-		httpAddr string
+		dataDir     string
+		httpAddr    string
+		trustDomain string
 	)
 
 	cmd := &cobra.Command{
@@ -36,9 +38,14 @@ func newServerCommand() *cobra.Command {
 			}
 			defer store.Close()
 
+			ca, err := identity.LoadOrCreate(filepath.Join(dataDir, "ca"), trustDomain)
+			if err != nil {
+				return fmt.Errorf("ca: %w", err)
+			}
+
 			srv := &http.Server{
 				Addr:              httpAddr,
-				Handler:           api.NewServer(store).Handler(),
+				Handler:           api.NewServer(store, ca).Handler(),
 				ReadHeaderTimeout: 5 * time.Second,
 			}
 
@@ -47,7 +54,7 @@ func newServerCommand() *cobra.Command {
 
 			errCh := make(chan error, 1)
 			go func() {
-				fmt.Fprintf(os.Stderr, "raftel server: listening on http://%s (data-dir=%s)\n", httpAddr, dataDir)
+				fmt.Fprintf(os.Stderr, "raftel server: trust-domain=%s data-dir=%s listen=http://%s\n", ca.TrustDomain(), dataDir, httpAddr)
 				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					errCh <- err
 					return
@@ -69,6 +76,7 @@ func newServerCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&dataDir, "data-dir", ".raftel", "directory for SQLite db, CA key, etc.")
 	cmd.Flags().StringVar(&httpAddr, "http-addr", "127.0.0.1:8080", "HTTP listen address (admin API + AuthZEN endpoint)")
+	cmd.Flags().StringVar(&trustDomain, "trust-domain", "raftel.local", "SPIFFE trust domain")
 
 	return cmd
 }
