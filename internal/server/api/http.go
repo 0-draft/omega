@@ -38,7 +38,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/domains/{name}", s.getDomain)
 	mux.HandleFunc("POST /v1/svid", s.issueSVID)
 	mux.HandleFunc("GET /v1/bundle", s.getBundle)
-	mux.HandleFunc("POST /v1/access/evaluation", s.evaluateAccess)
+	mux.HandleFunc("POST /access/v1/evaluation", s.evaluateAccess)
 	return mux
 }
 

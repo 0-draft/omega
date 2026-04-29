@@ -179,7 +179,7 @@ func TestHTTPAccessEvaluationAllow(t *testing.T) {
   "action":   {"name":"GET"},
   "resource": {"type":"HttpPath","id":"/api/foo"}
 }`)
-	resp, err := http.Post(srv.URL+"/v1/access/evaluation", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(srv.URL+"/access/v1/evaluation", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestHTTPAccessEvaluationDenyByDefault(t *testing.T) {
   "action":   {"name":"GET"},
   "resource": {"type":"HttpPath","id":"/api/foo"}
 }`)
-	resp, err := http.Post(srv.URL+"/v1/access/evaluation", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(srv.URL+"/access/v1/evaluation", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestHTTPAccessEvaluationDenyByDefault(t *testing.T) {
 func TestHTTPAccessEvaluationBadRequest(t *testing.T) {
 	srv := newTestServer(t)
 	body := []byte(`{"subject":{"type":"","id":""},"action":{"name":""},"resource":{"type":"","id":""}}`)
-	resp, err := http.Post(srv.URL+"/v1/access/evaluation", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(srv.URL+"/access/v1/evaluation", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}

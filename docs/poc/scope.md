@@ -14,7 +14,7 @@
 - Self-signed CA on first boot. X.509-SVID, 30 minute validity. SPIFFE ID format
   `spiffe://omega.local/<domain-path>/<service>`.
 - SPIFFE Workload API on `/tmp/omega-agent.sock`, UID-based attestation.
-- Cedar engine embedded. AuthZEN 1.0 endpoint at `POST /access/v1/evaluation`.
+- Cedar engine embedded. OpenID AuthZEN 1.0 PDP API at `POST /access/v1/evaluation`.
 - SQLite single-file storage (`<data-dir>/omega.db`). 3 tables.
 - `examples/hello-svid/` demo (server + client), wired up by `make demo`.
 
