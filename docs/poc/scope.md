@@ -1,21 +1,21 @@
-# Raftel PoC v0.0.1 — Scope
+# Omega PoC v0.0.1 — Scope
 
 > Detailed background lives in the kill-athenz-pj research notes. This file is the in-repo summary.
 
 ## Goal
 
-> `raftel server` (control plane) + `raftel agent` (Workload API) + `raftel svid fetch` (CLI).
+> `omega server` (control plane) + `omega agent` (Workload API) + `omega svid fetch` (CLI).
 > A demo client picks up an X.509-SVID, calls a protected HTTP endpoint, and the request is
 > allowed or denied by a Cedar policy. End-to-end demo in 30 seconds.
 
 ## In-scope (v0.0.1)
 
-- Single binary `raftel` with subcommands: `server`, `agent`, `domain`, `policy`, `svid`.
+- Single binary `omega` with subcommands: `server`, `agent`, `domain`, `policy`, `svid`.
 - Self-signed CA on first boot. X.509-SVID, 30 minute validity. SPIFFE ID format
-  `spiffe://raftel.local/<domain-path>/<service>`.
-- SPIFFE Workload API on `/tmp/raftel-agent.sock`, UID-based attestation.
+  `spiffe://omega.local/<domain-path>/<service>`.
+- SPIFFE Workload API on `/tmp/omega-agent.sock`, UID-based attestation.
 - Cedar engine embedded. AuthZEN 1.0 endpoint at `POST /access/v1/evaluation`.
-- SQLite single-file storage (`<data-dir>/raftel.db`). 3 tables.
+- SQLite single-file storage (`<data-dir>/omega.db`). 3 tables.
 - `examples/hello-svid/` demo (server + client), wired up by `make demo`.
 
 ## Out-of-scope (defer)

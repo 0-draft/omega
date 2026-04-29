@@ -1,4 +1,4 @@
-// Package storage holds the Raftel control plane persistence layer.
+// Package storage holds the Omega control plane persistence layer.
 //
 // PoC v0.0.1 uses a single-file SQLite database. v0.1 will move to
 // Postgres + event sourcing; the Store interface here is intentionally

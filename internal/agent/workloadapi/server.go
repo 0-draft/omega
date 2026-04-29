@@ -1,5 +1,5 @@
 // Package workloadapi implements the SPIFFE Workload API server side
-// that runs inside `raftel agent`.
+// that runs inside `omega agent`.
 //
 // PoC v0.0.1: only FetchX509SVID and FetchX509Bundles are implemented.
 // Each FetchX509SVID call attests the peer via UID, looks up the SPIFFE
@@ -28,8 +28,8 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
-	"github.com/kanywst/raftel/internal/agent/attestor"
-	"github.com/kanywst/raftel/internal/server/api"
+	"github.com/kanywst/omega/internal/agent/attestor"
+	"github.com/kanywst/omega/internal/server/api"
 )
 
 // Mapping maps a peer UID to the SPIFFE ID the agent will request on
@@ -167,11 +167,11 @@ func (s *Server) fetchBundle(ctx context.Context) ([]byte, string, error) {
 }
 
 // trustDomainFromCertCN reads the trust domain back from the bundle CA
-// CN. We currently set CN="Raftel Local CA"; for the PoC we hard-code
-// "raftel.local". In #11b the agent will get the trust domain from a
+// CN. We currently set CN="Omega Local CA"; for the PoC we hard-code
+// "omega.local". In #11b the agent will get the trust domain from a
 // dedicated control plane endpoint.
 func trustDomainFromCertCN(_ string) string {
-	return "raftel.local"
+	return "omega.local"
 }
 
 func credsFromContext(ctx context.Context) (attestor.Creds, error) {
@@ -181,7 +181,7 @@ func credsFromContext(ctx context.Context) (attestor.Creds, error) {
 	}
 	creds, ok := attestor.CredsFromAddr(p.Addr)
 	if !ok {
-		return attestor.Creds{}, status.Error(codes.PermissionDenied, "peer is not UID-attested (not connected via raftel agent listener)")
+		return attestor.Creds{}, status.Error(codes.PermissionDenied, "peer is not UID-attested (not connected via omega agent listener)")
 	}
 	return creds, nil
 }

@@ -13,9 +13,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kanywst/raftel/internal/server/api"
-	"github.com/kanywst/raftel/internal/server/identity"
-	"github.com/kanywst/raftel/internal/server/storage"
+	"github.com/kanywst/omega/internal/server/api"
+	"github.com/kanywst/omega/internal/server/identity"
+	"github.com/kanywst/omega/internal/server/storage"
 )
 
 func newServerCommand() *cobra.Command {
@@ -27,12 +27,12 @@ func newServerCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "server",
-		Short: "Run the Raftel control plane (Identity + Policy + Federation Hub)",
+		Short: "Run the Omega control plane (Identity + Policy + Federation Hub)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := os.MkdirAll(dataDir, 0o755); err != nil {
 				return fmt.Errorf("create data dir: %w", err)
 			}
-			store, err := storage.Open(filepath.Join(dataDir, "raftel.db"))
+			store, err := storage.Open(filepath.Join(dataDir, "omega.db"))
 			if err != nil {
 				return err
 			}
@@ -54,7 +54,7 @@ func newServerCommand() *cobra.Command {
 
 			errCh := make(chan error, 1)
 			go func() {
-				fmt.Fprintf(os.Stderr, "raftel server: trust-domain=%s data-dir=%s listen=http://%s\n", ca.TrustDomain(), dataDir, httpAddr)
+				fmt.Fprintf(os.Stderr, "omega server: trust-domain=%s data-dir=%s listen=http://%s\n", ca.TrustDomain(), dataDir, httpAddr)
 				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					errCh <- err
 					return
@@ -74,9 +74,9 @@ func newServerCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&dataDir, "data-dir", ".raftel", "directory for SQLite db, CA key, etc.")
+	cmd.Flags().StringVar(&dataDir, "data-dir", ".omega", "directory for SQLite db, CA key, etc.")
 	cmd.Flags().StringVar(&httpAddr, "http-addr", "127.0.0.1:8080", "HTTP listen address (admin API + AuthZEN endpoint)")
-	cmd.Flags().StringVar(&trustDomain, "trust-domain", "raftel.local", "SPIFFE trust domain")
+	cmd.Flags().StringVar(&trustDomain, "trust-domain", "omega.local", "SPIFFE trust domain")
 
 	return cmd
 }

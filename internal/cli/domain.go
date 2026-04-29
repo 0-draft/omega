@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kanywst/raftel/internal/server/storage"
+	"github.com/kanywst/omega/internal/server/storage"
 )
 
 func newDomainCommand() *cobra.Command {
@@ -18,7 +18,7 @@ func newDomainCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "domain",
-		Short: "Manage Raftel domains (hierarchical namespaces, e.g. media.news)",
+		Short: "Manage Omega domains (hierarchical namespaces, e.g. media.news)",
 	}
 	cmd.PersistentFlags().StringVar(&serverURL, "server", "http://127.0.0.1:8080", "control plane HTTP base URL")
 

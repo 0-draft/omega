@@ -1,4 +1,4 @@
-module github.com/kanywst/raftel
+module github.com/kanywst/omega
 
 go 1.25.0
 

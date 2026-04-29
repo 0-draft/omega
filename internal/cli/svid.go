@@ -17,7 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kanywst/raftel/internal/server/api"
+	"github.com/kanywst/omega/internal/server/api"
 )
 
 func newSVIDCommand() *cobra.Command {
@@ -35,7 +35,7 @@ func newSVIDCommand() *cobra.Command {
 			return fmt.Errorf("not implemented yet (W2 #11): socket=%s", socket)
 		},
 	}
-	fetch.Flags().StringVar(&socket, "socket", "/tmp/raftel-agent.sock", "Workload API unix socket")
+	fetch.Flags().StringVar(&socket, "socket", "/tmp/omega-agent.sock", "Workload API unix socket")
 
 	var (
 		serverURL string
@@ -117,7 +117,7 @@ func newSVIDCommand() *cobra.Command {
 		},
 	}
 	issue.Flags().StringVar(&serverURL, "server", "http://127.0.0.1:8080", "control plane HTTP base URL")
-	issue.Flags().StringVar(&spiffeID, "spiffe-id", "", "SPIFFE ID to issue (e.g. spiffe://raftel.local/example/web)")
+	issue.Flags().StringVar(&spiffeID, "spiffe-id", "", "SPIFFE ID to issue (e.g. spiffe://omega.local/example/web)")
 	issue.Flags().StringVar(&outDir, "out-dir", "", "directory to write svid.pem / bundle.pem / key.pem (default: stdout)")
 
 	cmd.AddCommand(fetch, issue)

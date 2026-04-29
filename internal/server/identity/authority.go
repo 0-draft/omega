@@ -1,4 +1,4 @@
-// Package identity owns the Raftel CA and SVID issuance.
+// Package identity owns the Omega CA and SVID issuance.
 //
 // PoC v0.0.1 uses a single self-signed CA per data-dir, ECDSA P-256.
 // HSM (PKCS#11) and KMS plugins land in v0.3 — the Authority struct is
@@ -64,7 +64,7 @@ func createAuthority(td spiffeid.TrustDomain, keyPath, crtPath string) (*Authori
 	now := time.Now()
 	tpl := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "Raftel Local CA"},
+		Subject:               pkix.Name{CommonName: "Omega Local CA"},
 		NotBefore:             now.Add(-1 * time.Minute),
 		NotAfter:              now.Add(caValidity),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,

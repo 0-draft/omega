@@ -15,20 +15,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kanywst/raftel/internal/server/api"
-	"github.com/kanywst/raftel/internal/server/identity"
-	"github.com/kanywst/raftel/internal/server/storage"
+	"github.com/kanywst/omega/internal/server/api"
+	"github.com/kanywst/omega/internal/server/identity"
+	"github.com/kanywst/omega/internal/server/storage"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	dir := t.TempDir()
-	store, err := storage.Open(filepath.Join(dir, "raftel.db"))
+	store, err := storage.Open(filepath.Join(dir, "omega.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	ca, err := identity.LoadOrCreate(filepath.Join(dir, "ca"), "raftel.local")
+	ca, err := identity.LoadOrCreate(filepath.Join(dir, "ca"), "omega.local")
 	if err != nil {
 		t.Fatalf("ca: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestHTTPSVIDRoundTrip(t *testing.T) {
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 
 	body, _ := json.Marshal(api.IssueSVIDRequest{
-		SPIFFEID: "spiffe://raftel.local/example/web",
+		SPIFFEID: "spiffe://omega.local/example/web",
 		CSR:      string(csrPEM),
 	})
 	resp, err := http.Post(srv.URL+"/v1/svid", "application/json", bytes.NewReader(body))
@@ -123,7 +123,7 @@ func TestHTTPSVIDRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse svid: %v", err)
 	}
-	if len(cert.URIs) != 1 || cert.URIs[0].String() != "spiffe://raftel.local/example/web" {
+	if len(cert.URIs) != 1 || cert.URIs[0].String() != "spiffe://omega.local/example/web" {
 		t.Errorf("svid URI: %v", cert.URIs)
 	}
 

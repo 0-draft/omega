@@ -12,19 +12,19 @@ import (
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
-	"github.com/kanywst/raftel/internal/server/identity"
+	"github.com/kanywst/omega/internal/server/identity"
 )
 
 func TestLoadOrCreatePersistsCA(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "ca")
 
-	a, err := identity.LoadOrCreate(dir, "raftel.local")
+	a, err := identity.LoadOrCreate(dir, "omega.local")
 	if err != nil {
 		t.Fatalf("first create: %v", err)
 	}
 	bundleA := a.BundlePEM()
 
-	b, err := identity.LoadOrCreate(dir, "raftel.local")
+	b, err := identity.LoadOrCreate(dir, "omega.local")
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -34,12 +34,12 @@ func TestLoadOrCreatePersistsCA(t *testing.T) {
 }
 
 func TestIssueSVIDValidates(t *testing.T) {
-	a, err := identity.LoadOrCreate(filepath.Join(t.TempDir(), "ca"), "raftel.local")
+	a, err := identity.LoadOrCreate(filepath.Join(t.TempDir(), "ca"), "omega.local")
 	if err != nil {
 		t.Fatalf("load ca: %v", err)
 	}
 
-	id, err := spiffeid.FromString("spiffe://raftel.local/example/web")
+	id, err := spiffeid.FromString("spiffe://omega.local/example/web")
 	if err != nil {
 		t.Fatalf("spiffeid: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestIssueSVIDValidates(t *testing.T) {
 }
 
 func TestIssueSVIDRejectsForeignTrustDomain(t *testing.T) {
-	a, err := identity.LoadOrCreate(filepath.Join(t.TempDir(), "ca"), "raftel.local")
+	a, err := identity.LoadOrCreate(filepath.Join(t.TempDir(), "ca"), "omega.local")
 	if err != nil {
 		t.Fatalf("load ca: %v", err)
 	}

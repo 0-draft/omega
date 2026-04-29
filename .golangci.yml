@@ -16,7 +16,7 @@ linters:
 
 linters-settings:
   goimports:
-    local-prefixes: github.com/kanywst/raftel
+    local-prefixes: github.com/kanywst/omega
   revive:
     severity: warning
     rules:

@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kanywst/raftel/internal/server/storage"
+	"github.com/kanywst/omega/internal/server/storage"
 )
 
 func newStore(t *testing.T) *storage.Store {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := storage.Open(filepath.Join(dir, "raftel.db"))
+	s, err := storage.Open(filepath.Join(dir, "omega.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -6,7 +6,7 @@
 *.db-shm
 *.pem
 *.key
-.raftel/
+.omega/
 .envrc
 .DS_Store
 coverage.out

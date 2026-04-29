@@ -13,8 +13,8 @@ import (
 	workloadpb "github.com/spiffe/go-spiffe/v2/proto/spiffe/workload"
 	"google.golang.org/grpc"
 
-	"github.com/kanywst/raftel/internal/agent/attestor"
-	"github.com/kanywst/raftel/internal/agent/workloadapi"
+	"github.com/kanywst/omega/internal/agent/attestor"
+	"github.com/kanywst/omega/internal/agent/workloadapi"
 )
 
 func newAgentCommand() *cobra.Command {
@@ -26,8 +26,8 @@ func newAgentCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "agent",
-		Short: "Run the Raftel node agent (SPIFFE Workload API)",
-		Long: `Run the Raftel node agent: a SPIFFE Workload API gRPC server on a unix
+		Short: "Run the Omega node agent (SPIFFE Workload API)",
+		Long: `Run the Omega node agent: a SPIFFE Workload API gRPC server on a unix
 socket that issues X.509-SVIDs to local workloads attested by their UID.
 
 For each workload connection, the agent extracts the peer UID via
@@ -39,14 +39,14 @@ ID via --map, and asks the control plane to sign a fresh CSR.`,
 				return err
 			}
 			if len(mapping) == 0 {
-				return fmt.Errorf("at least one --map is required (e.g. --map uid=%d,id=spiffe://raftel.local/example/web)", os.Getuid())
+				return fmt.Errorf("at least one --map is required (e.g. --map uid=%d,id=spiffe://omega.local/example/web)", os.Getuid())
 			}
 			return runAgent(c.Context(), socket, serverURL, mapping)
 		},
 	}
-	cmd.Flags().StringVar(&socket, "socket", "/tmp/raftel-agent.sock", "Workload API unix socket path")
+	cmd.Flags().StringVar(&socket, "socket", "/tmp/omega-agent.sock", "Workload API unix socket path")
 	cmd.Flags().StringVar(&serverURL, "server", "http://127.0.0.1:8080", "control plane HTTP base URL")
-	cmd.Flags().StringArrayVar(&mappings, "map", nil, "uid->spiffe-id mapping (repeatable), e.g. --map 'uid=1000,id=spiffe://raftel.local/example/web'")
+	cmd.Flags().StringArrayVar(&mappings, "map", nil, "uid->spiffe-id mapping (repeatable), e.g. --map 'uid=1000,id=spiffe://omega.local/example/web'")
 	return cmd
 }
 
@@ -95,7 +95,7 @@ func runAgent(parent context.Context, socketPath, serverURL string, mapping work
 
 	errCh := make(chan error, 1)
 	go func() {
-		fmt.Fprintf(os.Stderr, "raftel agent: socket=%s server=%s mappings=%d\n", socketPath, serverURL, len(mapping))
+		fmt.Fprintf(os.Stderr, "omega agent: socket=%s server=%s mappings=%d\n", socketPath, serverURL, len(mapping))
 		errCh <- grpcSrv.Serve(lis)
 	}()
 

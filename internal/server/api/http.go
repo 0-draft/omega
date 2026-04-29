@@ -1,4 +1,4 @@
-// Package api exposes the Raftel control plane over HTTP/JSON.
+// Package api exposes the Omega control plane over HTTP/JSON.
 //
 // PoC v0.0.1 keeps things simple: net/http + encoding/json. The
 // AuthZEN evaluation endpoint and gRPC Workload API land in W3 / W2.
@@ -15,8 +15,8 @@ import (
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
-	"github.com/kanywst/raftel/internal/server/identity"
-	"github.com/kanywst/raftel/internal/server/storage"
+	"github.com/kanywst/omega/internal/server/identity"
+	"github.com/kanywst/omega/internal/server/storage"
 )
 
 type Server struct {
