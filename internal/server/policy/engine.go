@@ -69,7 +69,7 @@ func loadFromDir(dir string) (*cedar.PolicySet, cedar.EntityMap, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("parse %s: %w", path, err)
 		}
-		for id, p := range fileSet.Map() {
+		for id, p := range fileSet.All() {
 			if !ps.Add(id, p) {
 				return nil, nil, fmt.Errorf("duplicate policy id %q (defined again in %s)", id, path)
 			}
