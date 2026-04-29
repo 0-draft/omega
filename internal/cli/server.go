@@ -15,6 +15,7 @@ import (
 
 	"github.com/kanywst/omega/internal/server/api"
 	"github.com/kanywst/omega/internal/server/identity"
+	"github.com/kanywst/omega/internal/server/policy"
 	"github.com/kanywst/omega/internal/server/storage"
 )
 
@@ -23,6 +24,7 @@ func newServerCommand() *cobra.Command {
 		dataDir     string
 		httpAddr    string
 		trustDomain string
+		policyDir   string
 	)
 
 	cmd := &cobra.Command{
@@ -43,9 +45,16 @@ func newServerCommand() *cobra.Command {
 				return fmt.Errorf("ca: %w", err)
 			}
 
+			pdp := policy.New()
+			if policyDir != "" {
+				if err := pdp.LoadDir(policyDir); err != nil {
+					return fmt.Errorf("policy: %w", err)
+				}
+			}
+
 			srv := &http.Server{
 				Addr:              httpAddr,
-				Handler:           api.NewServer(store, ca).Handler(),
+				Handler:           api.NewServer(store, ca, pdp).Handler(),
 				ReadHeaderTimeout: 5 * time.Second,
 			}
 
@@ -77,6 +86,7 @@ func newServerCommand() *cobra.Command {
 	cmd.Flags().StringVar(&dataDir, "data-dir", ".omega", "directory for SQLite db, CA key, etc.")
 	cmd.Flags().StringVar(&httpAddr, "http-addr", "127.0.0.1:8080", "HTTP listen address (admin API + AuthZEN endpoint)")
 	cmd.Flags().StringVar(&trustDomain, "trust-domain", "omega.local", "SPIFFE trust domain")
+	cmd.Flags().StringVar(&policyDir, "policy-dir", "", "directory of *.cedar policy files (and optional entities.json) to load at startup")
 
 	return cmd
 }

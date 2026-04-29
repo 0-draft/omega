@@ -11,16 +11,23 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kanywst/omega/internal/server/api"
 	"github.com/kanywst/omega/internal/server/identity"
+	"github.com/kanywst/omega/internal/server/policy"
 	"github.com/kanywst/omega/internal/server/storage"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return newTestServerWithPolicy(t, policy.New())
+}
+
+func newTestServerWithPolicy(t *testing.T, pdp *policy.Engine) *httptest.Server {
 	t.Helper()
 	dir := t.TempDir()
 	store, err := storage.Open(filepath.Join(dir, "omega.db"))
@@ -32,7 +39,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	if err != nil {
 		t.Fatalf("ca: %v", err)
 	}
-	srv := httptest.NewServer(api.NewServer(store, ca).Handler())
+	srv := httptest.NewServer(api.NewServer(store, ca, pdp).Handler())
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -148,6 +155,82 @@ func TestHTTPSVIDRoundTrip(t *testing.T) {
 	defer bundleResp.Body.Close()
 	if bundleResp.StatusCode != http.StatusOK {
 		t.Fatalf("bundle status: %d", bundleResp.StatusCode)
+	}
+}
+
+func TestHTTPAccessEvaluationAllow(t *testing.T) {
+	pdp := policy.New()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "p.cedar"), []byte(`permit (
+  principal == Spiffe::"spiffe://omega.local/example/web",
+  action == Action::"GET",
+  resource == HttpPath::"/api/foo"
+);
+`), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	if err := pdp.LoadDir(dir); err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	srv := newTestServerWithPolicy(t, pdp)
+
+	body := []byte(`{
+  "subject":  {"type":"Spiffe","id":"spiffe://omega.local/example/web"},
+  "action":   {"name":"GET"},
+  "resource": {"type":"HttpPath","id":"/api/foo"}
+}`)
+	resp, err := http.Post(srv.URL+"/v1/access/evaluation", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d want 200 (body=%s)", resp.StatusCode, raw)
+	}
+	var out policy.EvalResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.Decision {
+		t.Errorf("decision: got false want true (reasons=%v)", out.Reasons)
+	}
+}
+
+func TestHTTPAccessEvaluationDenyByDefault(t *testing.T) {
+	srv := newTestServer(t)
+	body := []byte(`{
+  "subject":  {"type":"Spiffe","id":"spiffe://omega.local/example/web"},
+  "action":   {"name":"GET"},
+  "resource": {"type":"HttpPath","id":"/api/foo"}
+}`)
+	resp, err := http.Post(srv.URL+"/v1/access/evaluation", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	var out policy.EvalResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Decision {
+		t.Errorf("expected default deny, got allow")
+	}
+}
+
+func TestHTTPAccessEvaluationBadRequest(t *testing.T) {
+	srv := newTestServer(t)
+	body := []byte(`{"subject":{"type":"","id":""},"action":{"name":""},"resource":{"type":"","id":""}}`)
+	resp, err := http.Post(srv.URL+"/v1/access/evaluation", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
 	}
 }
 

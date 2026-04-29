@@ -16,16 +16,18 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
 	"github.com/kanywst/omega/internal/server/identity"
+	"github.com/kanywst/omega/internal/server/policy"
 	"github.com/kanywst/omega/internal/server/storage"
 )
 
 type Server struct {
-	store *storage.Store
-	ca    *identity.Authority
+	store  *storage.Store
+	ca     *identity.Authority
+	policy *policy.Engine
 }
 
-func NewServer(store *storage.Store, ca *identity.Authority) *Server {
-	return &Server{store: store, ca: ca}
+func NewServer(store *storage.Store, ca *identity.Authority, pdp *policy.Engine) *Server {
+	return &Server{store: store, ca: ca, policy: pdp}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -36,6 +38,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/domains/{name}", s.getDomain)
 	mux.HandleFunc("POST /v1/svid", s.issueSVID)
 	mux.HandleFunc("GET /v1/bundle", s.getBundle)
+	mux.HandleFunc("POST /v1/access/evaluation", s.evaluateAccess)
 	return mux
 }
 
@@ -132,6 +135,20 @@ func (s *Server) issueSVID(w http.ResponseWriter, r *http.Request) {
 		Bundle:    string(svid.BundlePEM),
 		ExpiresAt: svid.NotAfter,
 	})
+}
+
+func (s *Server) evaluateAccess(w http.ResponseWriter, r *http.Request) {
+	var req policy.EvalRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
+		return
+	}
+	resp, err := s.policy.Evaluate(req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) getBundle(w http.ResponseWriter, _ *http.Request) {
