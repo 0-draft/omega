@@ -1,0 +1,15 @@
+/bin/
+/dist/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.pem
+*.key
+.raftel/
+.envrc
+.DS_Store
+coverage.out
+coverage.html
+.idea/
+.vscode/
