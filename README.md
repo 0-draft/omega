@@ -39,11 +39,23 @@ Every authorization decision lands in a tamper-evident log with the full delegat
 ```bash
 git clone https://github.com/kanywst/omega
 cd omega
-make build
 make demo
 ```
 
-`make demo` brings up the control plane + a node agent + a sample protected service, fetches a SVID over the SPIFFE Workload API, and shows Cedar-evaluated allow / deny. Target: 30 seconds end-to-end.
+`make demo` boots the control plane, two node agents (giving the same OS user two distinct SPIFFE IDs over separate sockets), and the [`examples/hello-svid`](examples/hello-svid/) server + client. The client fetches its X.509-SVID over the SPIFFE Workload API, mTLS-handshakes the server, and prints the verified peer SPIFFE ID. End-to-end in a few seconds.
+
+Authorization is exposed at the OpenID AuthZEN 1.0 PDP API endpoint:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/access/v1/evaluation \
+  -H 'Content-Type: application/json' \
+  -d '{"subject":{"type":"Spiffe","id":"spiffe://omega.local/example/web"},
+       "action":{"name":"GET"},
+       "resource":{"type":"HttpPath","id":"/api/foo"}}'
+# -> {"decision":true,"reasons":["policy0"]}   (or {"decision":false} when no policy permits)
+```
+
+Pass `--policy-dir DIR` to `omega server` to load `*.cedar` files at startup.
 
 ## Architecture
 
@@ -60,6 +72,20 @@ make demo
 ```
 
 Components are independently runnable (`omega server identity`, `omega server policy`, `omega agent`) so deployments can scale or replace each piece without forklift upgrades.
+
+## Endpoints (PoC v0.0.1)
+
+| Method | Path                      | Purpose                                                   |
+| ------ | ------------------------- | --------------------------------------------------------- |
+| GET    | `/healthz`                | Liveness                                                  |
+| POST   | `/v1/domains`             | Create a SPIFFE namespace (`{name, description}`)         |
+| GET    | `/v1/domains`             | List domains                                              |
+| GET    | `/v1/domains/{name}`      | Fetch a domain                                            |
+| POST   | `/v1/svid`                | Issue an X.509-SVID from a CSR (`{spiffe_id, csr}`)       |
+| GET    | `/v1/bundle`              | Trust bundle PEM (CA cert)                                |
+| POST   | `/access/v1/evaluation`   | OpenID AuthZEN 1.0 PDP evaluation                         |
+
+Workload API gRPC (SPIFFE) is served by `omega agent` over a Unix socket and speaks the standard `SpiffeWorkloadAPI` service: `FetchX509SVID` and `FetchX509Bundles`.
 
 ## Standards alignment
 
