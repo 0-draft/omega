@@ -26,9 +26,15 @@ docker run -d --name "$PG_CONTAINER" \
 	-e POSTGRES_PASSWORD=omega -e POSTGRES_USER=omega -e POSTGRES_DB=omega \
 	-p "$PG_PORT:5432" postgres:16-alpine >/dev/null
 
-for _ in $(seq 1 60); do
-	if docker exec "$PG_CONTAINER" pg_isready -U omega -d omega 2>/dev/null | grep -q "accepting"; then
-		break
+# Probe from the host so we wait for both Postgres readiness AND the
+# Docker port forwarding to be live. Probing inside the container can
+# return ready before the host port is reachable, which makes omega's
+# first connection race the server and trip "connection reset by peer".
+for _ in $(seq 1 120); do
+	if (echo > "/dev/tcp/127.0.0.1/$PG_PORT") 2>/dev/null; then
+		if docker exec "$PG_CONTAINER" psql -U omega -d omega -c 'SELECT 1' >/dev/null 2>&1; then
+			break
+		fi
 	fi
 	sleep 0.5
 done
