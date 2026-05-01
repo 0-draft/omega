@@ -83,7 +83,7 @@ jobs:
   helm:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v　６
+      - uses: actions/checkout@v6
       - uses: azure/setup-helm@v5
         with:
           version: latest
