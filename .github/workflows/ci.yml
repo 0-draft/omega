@@ -146,23 +146,24 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    # golangci-lint upstream is built with Go 1.25 and refuses to load a
-    # config when go.mod targets 1.26.0 (golangci/golangci-lint#6272).
-    # Keep the job advisory until upstream ships a Go 1.26 build; until
-    # then `go vet` / `govulncheck` / `gosec` cover the basics.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - uses: golangci/golangci-lint-action@v6
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        # Upstream is built with Go 1.25 and refuses to load when go.mod
+        # targets Go 1.26 (golangci/golangci-lint#6272). Marked advisory
+        # at the step level so a failure surfaces as a warning instead
+        # of failing the job; remove this once upstream ships a Go 1.26
+        # build.
+        continue-on-error: true
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
-      - name: go vet (fallback while golangci-lint trails Go 1.26)
-        if: always()
-        run: go vet ./...
 
   govulncheck:
     runs-on: ubuntu-latest
@@ -205,7 +206,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: log in to ghcr.io
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
