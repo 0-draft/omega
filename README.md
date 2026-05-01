@@ -11,8 +11,8 @@ Running workload identity today means stitching four projects together: SPIRE fo
 The standards landed. The integration didn't.
 
 - **SPIFFE/SPIRE** is the de-facto workload identity standard but ends at issuance: authorization is explicitly out of scope.
-- **OpenID AuthZEN 1.0** reached Final on 2026-01-11 with 15+ implementers (AWS, Cerbos, Aserto, SGNL, Axiomatics, OpenFGA, Kong, Envoy, WSO2, Broadcom, …). PDPs are abundant; what's missing is a workload identity provider that *natively* speaks AuthZEN as the subject side of every decision.
-- **Cedar** joined CNCF Sandbox in January 2026 and is in production at Cloudflare, MongoDB, StrongDM, AWS Bedrock AgentCore. Omega ships it as the default PDP.
+- **OpenID AuthZEN Authorization API 1.0** was approved as a Final Specification on 2026-01-12 with 15+ PDP implementers (Aserto, AVP, Axiomatics, Cerbos, EmpowerID, OpenFGA, Permit.io, PingAuthorize, PlainID, SGNL, Topaz, WSO2, …). PDPs are abundant; what's missing is a workload identity provider that *natively* speaks AuthZEN as the subject side of every decision.
+- **Cedar** joined CNCF Sandbox on 2025-10-08 and is in production at Cloudflare, MongoDB, StrongDM, AWS Bedrock AgentCore. Omega ships it as the default PDP.
 - **Vault**'s 2023 BUSL relicensing and IBM's 2024 acquisition fragmented the OSS continuity (OpenBao 2.5 under LF, still maturing). Omega stays Apache-2.0, no CLA, no relicensing trapdoor.
 - **OSS workload-identity admin UI is essentially absent**: SPIRE has no console, Vault and Keycloak ship 2010s-era admin panels. Omega's `ui/` dashboard is a first-class deliverable, not an afterthought.
 
