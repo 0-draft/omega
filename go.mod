@@ -1,6 +1,6 @@
 module github.com/0-draft/omega
 
-go 1.26.0
+go 1.26.2
 
 require (
 	github.com/cedar-policy/cedar-go v1.6.0

@@ -39,10 +39,27 @@ omega server \
 	>"$DEMO_DIR/beta-server.log" 2>&1 &
 echo $! >"$DEMO_DIR/beta-server.pid"
 
-# Both servers do an immediate peer fetch on startup, but give it a
-# moment to settle so the very first /v1/federation/bundles response
-# already carries the merged map.
-sleep 2
+# Both servers do an immediate peer fetch on startup, but the two
+# servers start concurrently — whichever ticks first may find its peer
+# still binding its port. The registry's regular refresh interval is
+# 30s, which is too long for a CI demo, so poll each /v1/federation/bundles
+# endpoint until both ends carry the merged 2-bundle map.
+wait_federated() {
+	local label="$1" port="$2"
+	for _ in $(seq 1 100); do
+		body="$(curl -fsS "http://127.0.0.1:$port/v1/federation/bundles" 2>/dev/null || true)"
+		if echo "$body" | grep -q omega.alpha && echo "$body" | grep -q omega.beta; then
+			return 0
+		fi
+		sleep 0.3
+	done
+	echo "FAIL: $label did not converge to a 2-bundle federation map" >&2
+	echo "----- $label server.log tail -----" >&2
+	tail -80 "$DEMO_DIR/$label-server.log" >&2 || true
+	return 1
+}
+wait_federated alpha "$ALPHA_PORT"
+wait_federated beta "$BETA_PORT"
 
 echo "[demo] starting omega.alpha agent (socket $DEMO_DIR/alpha.sock)"
 omega agent \

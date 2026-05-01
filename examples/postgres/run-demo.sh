@@ -42,12 +42,20 @@ omega server \
 	>"$DEMO_DIR/server.log" 2>&1 &
 echo $! >"$DEMO_DIR/server.pid"
 
-for _ in $(seq 1 60); do
+ready=0
+for _ in $(seq 1 150); do
 	if curl -fsS -o /dev/null "http://127.0.0.1:$SERVER_PORT/healthz" 2>/dev/null; then
+		ready=1
 		break
 	fi
 	sleep 0.2
 done
+if [[ "$ready" != "1" ]]; then
+	echo "FAIL: omega server did not become healthy on :$SERVER_PORT" >&2
+	echo "----- server.log -----" >&2
+	tail -80 "$DEMO_DIR/server.log" >&2 || true
+	exit 1
+fi
 
 echo "[demo] driving API calls (eval + create domain)"
 curl -fsS -X POST "http://127.0.0.1:$SERVER_PORT/access/v1/evaluation" \
@@ -67,12 +75,20 @@ omega server \
 	--db "$PG_DSN" \
 	>>"$DEMO_DIR/server.log" 2>&1 &
 echo $! >"$DEMO_DIR/server.pid"
-for _ in $(seq 1 60); do
+ready=0
+for _ in $(seq 1 150); do
 	if curl -fsS -o /dev/null "http://127.0.0.1:$SERVER_PORT/healthz" 2>/dev/null; then
+		ready=1
 		break
 	fi
 	sleep 0.2
 done
+if [[ "$ready" != "1" ]]; then
+	echo "FAIL: omega server did not become healthy on :$SERVER_PORT after restart" >&2
+	echo "----- server.log -----" >&2
+	tail -80 "$DEMO_DIR/server.log" >&2 || true
+	exit 1
+fi
 
 echo "[demo] domains visible after restart:"
 curl -fsS "http://127.0.0.1:$SERVER_PORT/v1/domains" | sed 's/^/  /'

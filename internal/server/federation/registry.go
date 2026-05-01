@@ -90,9 +90,23 @@ func (r *Registry) Peers() []PeerConfig {
 
 // Run blocks until ctx is canceled, refreshing every peer bundle on
 // each tick. It performs an immediate fetch on entry so the first
-// /v1/federation/bundles caller does not race the timer.
+// /v1/federation/bundles caller does not race the timer. If any peer
+// is still missing after the initial fetch (typical when peers boot
+// concurrently), a short backoff sequence retries before falling back
+// to the regular refresh interval.
 func (r *Registry) Run(ctx context.Context) {
 	r.refreshAll(ctx)
+	for _, d := range []time.Duration{200 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second, 2 * time.Second, 5 * time.Second} {
+		if r.allPeersFetched() {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(d):
+			r.refreshAll(ctx)
+		}
+	}
 	t := time.NewTicker(r.refresh)
 	defer t.Stop()
 	for {
@@ -103,6 +117,17 @@ func (r *Registry) Run(ctx context.Context) {
 			r.refreshAll(ctx)
 		}
 	}
+}
+
+func (r *Registry) allPeersFetched() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.peers {
+		if _, ok := r.peerBundles[p.TrustDomain]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Registry) refreshAll(ctx context.Context) {

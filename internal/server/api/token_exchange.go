@@ -19,8 +19,8 @@ import (
 // implementation accepts the JWT subject/actor token type only;
 // OIDC id_token / SAML2 / X.509 token types are not implemented yet.
 const (
-	grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
-	tokenTypeJWT           = "urn:ietf:params:oauth:token-type:jwt"
+	grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange" // #nosec G101 -- RFC 8693 grant-type URN
+	tokenTypeJWT           = "urn:ietf:params:oauth:token-type:jwt"            // #nosec G101 -- RFC 8693 token-type URN
 )
 
 // TokenExchangeRequest is the JSON shape of POST /v1/token/exchange.
