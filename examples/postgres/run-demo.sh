@@ -42,16 +42,20 @@ omega server \
 	>"$DEMO_DIR/server.log" 2>&1 &
 echo $! >"$DEMO_DIR/server.pid"
 
+# /healthz turns green as soon as the HTTP listener is up, but the
+# Postgres-backed write path also needs the advisory-lock leader to be
+# acquired (see leaderOnly in internal/server/api/http.go). Poll
+# /v1/leader so we don't fire writes before this replica wins the lock.
 ready=0
 for _ in $(seq 1 150); do
-	if curl -fsS -o /dev/null "http://127.0.0.1:$SERVER_PORT/healthz" 2>/dev/null; then
+	if curl -fsS "http://127.0.0.1:$SERVER_PORT/v1/leader" 2>/dev/null | grep -q '"is_leader":true'; then
 		ready=1
 		break
 	fi
 	sleep 0.2
 done
 if [[ "$ready" != "1" ]]; then
-	echo "FAIL: omega server did not become healthy on :$SERVER_PORT" >&2
+	echo "FAIL: omega server did not become leader on :$SERVER_PORT" >&2
 	echo "----- server.log -----" >&2
 	tail -80 "$DEMO_DIR/server.log" >&2 || true
 	exit 1
@@ -77,14 +81,14 @@ omega server \
 echo $! >"$DEMO_DIR/server.pid"
 ready=0
 for _ in $(seq 1 150); do
-	if curl -fsS -o /dev/null "http://127.0.0.1:$SERVER_PORT/healthz" 2>/dev/null; then
+	if curl -fsS "http://127.0.0.1:$SERVER_PORT/v1/leader" 2>/dev/null | grep -q '"is_leader":true'; then
 		ready=1
 		break
 	fi
 	sleep 0.2
 done
 if [[ "$ready" != "1" ]]; then
-	echo "FAIL: omega server did not become healthy on :$SERVER_PORT after restart" >&2
+	echo "FAIL: omega server did not become leader on :$SERVER_PORT after restart" >&2
 	echo "----- server.log -----" >&2
 	tail -80 "$DEMO_DIR/server.log" >&2 || true
 	exit 1
