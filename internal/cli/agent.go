@@ -9,19 +9,26 @@ import (
 	"strings"
 	"syscall"
 
+	"time"
+
 	"github.com/spf13/cobra"
 	workloadpb "github.com/spiffe/go-spiffe/v2/proto/spiffe/workload"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 
-	"github.com/kanywst/omega/internal/agent/attestor"
-	"github.com/kanywst/omega/internal/agent/workloadapi"
+	"github.com/0-draft/omega/internal/agent/attestor"
+	"github.com/0-draft/omega/internal/agent/workloadapi"
+	"github.com/0-draft/omega/internal/server/tracing"
+	"github.com/0-draft/omega/internal/version"
 )
 
 func newAgentCommand() *cobra.Command {
 	var (
-		socket    string
-		serverURL string
-		mappings  []string
+		socket       string
+		serverURL    string
+		mappings     []string
+		otlpEndpoint string
+		otlpInsecure bool
 	)
 
 	cmd := &cobra.Command{
@@ -41,12 +48,32 @@ ID via --map, and asks the control plane to sign a fresh CSR.`,
 			if len(mapping) == 0 {
 				return fmt.Errorf("at least one --map is required (e.g. --map uid=%d,id=spiffe://omega.local/example/web)", os.Getuid())
 			}
-			return runAgent(c.Context(), socket, serverURL, mapping)
+			ctx, stop := signal.NotifyContext(c.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			shutdownTracing, err := tracing.Setup(ctx, tracing.Config{
+				ServiceName:    "omega-agent",
+				ServiceVersion: version.Version,
+				Endpoint:       otlpEndpoint,
+				Insecure:       otlpInsecure,
+			})
+			if err != nil {
+				return fmt.Errorf("tracing: %w", err)
+			}
+			defer func() {
+				flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = shutdownTracing(flushCtx)
+			}()
+
+			return runAgent(ctx, socket, serverURL, mapping)
 		},
 	}
 	cmd.Flags().StringVar(&socket, "socket", "/tmp/omega-agent.sock", "Workload API unix socket path")
 	cmd.Flags().StringVar(&serverURL, "server", "http://127.0.0.1:8080", "control plane HTTP base URL")
 	cmd.Flags().StringArrayVar(&mappings, "map", nil, "uid->spiffe-id mapping (repeatable), e.g. --map 'uid=1000,id=spiffe://omega.local/example/web'")
+	cmd.Flags().StringVar(&otlpEndpoint, "otlp-endpoint", "", "OTLP/HTTP traces endpoint, host:port (overrides OTEL_EXPORTER_OTLP_ENDPOINT). Empty disables tracing.")
+	cmd.Flags().BoolVar(&otlpInsecure, "otlp-insecure", false, "send OTLP traces over plaintext HTTP (no TLS)")
 	return cmd
 }
 
@@ -80,18 +107,15 @@ func parseMappings(specs []string) (workloadapi.Mapping, error) {
 	return out, nil
 }
 
-func runAgent(parent context.Context, socketPath, serverURL string, mapping workloadapi.Mapping) error {
+func runAgent(ctx context.Context, socketPath, serverURL string, mapping workloadapi.Mapping) error {
 	lis, err := attestor.Listen(socketPath)
 	if err != nil {
 		return err
 	}
 	defer lis.Close()
 
-	grpcSrv := grpc.NewServer()
+	grpcSrv := grpc.NewServer(grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	workloadpb.RegisterSpiffeWorkloadAPIServer(grpcSrv, workloadapi.NewServer(serverURL, mapping))
-
-	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {

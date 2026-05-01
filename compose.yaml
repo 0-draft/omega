@@ -1,0 +1,116 @@
+# compose.yaml — end-to-end Omega quickstart in containers.
+#
+#   docker compose up --build
+#
+# Brings up the full stack:
+#
+#   1. omega-server         control plane (HTTP :8080, AuthZEN PDP)
+#   2. omega-agent-server   Workload API socket for the hello-svid server
+#   3. omega-agent-client   Workload API socket for the hello-svid client
+#   4. hello-svid-server    mTLS HTTPS service (:9443) using its agent socket
+#   5. hello-svid-client    one-shot mTLS request, prints peer SPIFFE ID, exits 0
+#   6. omega-ui             Next.js admin dashboard (:3000)
+#
+# Both agents map UID 0 (the override below) to a different SPIFFE ID over a
+# different unix socket, so a single user-space UID demos two-identity mTLS
+# without needing real OS users. We override the distroless `nonroot` user
+# only for this compose stack so the agent can create the socket inside the
+# shared `sockets` named volume — production deployments (Helm chart) keep
+# USER 65532 with proper securityContext.
+#
+# Image build policy: only one service per image tag carries `build:`. The
+# other services reference the same `image:` so buildx doesn't race two
+# parallel exporters writing the same tag (the failure mode that produced
+# `image "<tag>": already exists` on `up --build`).
+
+name: omega
+
+services:
+  omega-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omega:dev
+    user: "0:0"
+    command:
+      - server
+      - --http-addr=0.0.0.0:8080
+      - --data-dir=/var/lib/omega
+    ports:
+      - "8080:8080"
+    volumes:
+      - data:/var/lib/omega
+
+  omega-agent-server:
+    image: omega:dev
+    user: "0:0"
+    command:
+      - agent
+      - --socket=/run/omega/server.sock
+      - --server=http://omega-server:8080
+      - --map=uid=0,id=spiffe://omega.local/hello/server
+    depends_on:
+      - omega-server
+    volumes:
+      - sockets:/run/omega
+
+  omega-agent-client:
+    image: omega:dev
+    user: "0:0"
+    command:
+      - agent
+      - --socket=/run/omega/client.sock
+      - --server=http://omega-server:8080
+      - --map=uid=0,id=spiffe://omega.local/hello/client
+    depends_on:
+      - omega-server
+    volumes:
+      - sockets:/run/omega
+
+  hello-svid-server:
+    build:
+      context: .
+      dockerfile: examples/hello-svid/Dockerfile
+    image: omega-hello-svid:dev
+    user: "0:0"
+    entrypoint: ["/usr/local/bin/hello-svid-server"]
+    command:
+      - --socket=/run/omega/server.sock
+      - --addr=0.0.0.0:9443
+    ports:
+      - "9443:9443"
+    depends_on:
+      - omega-agent-server
+    volumes:
+      - sockets:/run/omega
+
+  hello-svid-client:
+    image: omega-hello-svid:dev
+    user: "0:0"
+    entrypoint: ["/usr/local/bin/hello-svid-client"]
+    command:
+      - --socket=/run/omega/client.sock
+      - --url=https://hello-svid-server:9443/
+      - --expect-server-id=spiffe://omega.local/hello/server
+    depends_on:
+      - hello-svid-server
+      - omega-agent-client
+    volumes:
+      - sockets:/run/omega
+    restart: "no"
+
+  omega-ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    image: omega-ui:dev
+    environment:
+      OMEGA_API: http://omega-server:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - omega-server
+
+volumes:
+  data:
+  sockets:

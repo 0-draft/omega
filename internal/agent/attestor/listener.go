@@ -1,8 +1,8 @@
 // Package attestor identifies workloads connecting to the local agent.
 //
-// PoC v0.0.1: UID-based attestation only, via SO_PEERCRED on Linux and
-// LOCAL_PEERCRED (Getpeereid) on Darwin/BSD. Real K8s SAT and process
-// attestation land in v0.1.
+// Current implementation: UID-based attestation only, via SO_PEERCRED
+// on Linux and LOCAL_PEERCRED (Getpeereid) on Darwin/BSD. K8s SAT and
+// process attestation are planned follow-ups.
 package attestor
 
 import (
@@ -55,6 +55,7 @@ func Listen(socketPath string) (*Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", socketPath, err)
 	}
+	// #nosec G302 -- workload socket must be world-accessible; UID is verified at SO_PEERCRED.
 	if err := os.Chmod(socketPath, 0o666); err != nil {
 		_ = l.Close()
 		return nil, fmt.Errorf("chmod %s: %w", socketPath, err)

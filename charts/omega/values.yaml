@@ -1,0 +1,76 @@
+# Default values for the Omega chart.
+# This is a YAML-formatted file.
+
+image:
+  repository: ghcr.io/0-draft/omega
+  tag: ""            # defaults to .Chart.AppVersion if empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+server:
+  enabled: true
+  replicas: 1
+  httpAddr: "0.0.0.0:8080"
+  trustDomain: omega.local
+  dataDir: /var/lib/omega
+  policyDir: ""      # set to a path inside the container to load *.cedar at boot
+  extraArgs: []
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  service:
+    type: ClusterIP
+    port: 8080
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+
+agent:
+  enabled: true
+  socketPath: /run/omega/agent.sock
+  serverURL: "http://omega-server:8080"
+  uidMap: []         # list of "uid=N,id=spiffe://..."
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 20m
+      memory: 32Mi
+  hostSocketPath: /run/omega
+  hostNetwork: false
+
+policy:
+  # Inline Cedar policies rendered into a ConfigMap and mounted at server.policyDir.
+  # Each key becomes a file. Set server.policyDir to /etc/omega/policy to use.
+  inline: {}
+  # Example:
+  # inline:
+  #   web.cedar: |
+  #     permit(
+  #       principal == Spiffe::"spiffe://omega.local/example/web",
+  #       action    == Action::"GET",
+  #       resource  == HttpPath::"/api/foo"
+  #     );
+
+serviceAccount:
+  create: true
+  annotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: true

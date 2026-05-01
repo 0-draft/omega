@@ -7,12 +7,13 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
-	"github.com/kanywst/omega/internal/server/identity"
+	"github.com/0-draft/omega/internal/server/identity"
 )
 
 func TestLoadOrCreatePersistsCA(t *testing.T) {
@@ -29,7 +30,7 @@ func TestLoadOrCreatePersistsCA(t *testing.T) {
 		t.Fatalf("reload: %v", err)
 	}
 	if string(bundleA) != string(b.BundlePEM()) {
-		t.Fatal("bundle changed across reload — CA was not persisted")
+		t.Fatal("bundle changed across reload - CA was not persisted")
 	}
 }
 
@@ -98,5 +99,54 @@ func TestIssueSVIDRejectsForeignTrustDomain(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if _, err := a.IssueSVID(other, &key.PublicKey); err == nil {
 		t.Fatal("expected error for foreign trust domain")
+	}
+}
+
+func TestNewConfigRouting(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     identity.Config
+		wantErr string
+	}{
+		{
+			name: "kind empty defaults to disk",
+			cfg:  identity.Config{TrustDomain: "omega.local", Dir: filepath.Join(t.TempDir(), "ca")},
+		},
+		{
+			name: "explicit disk kind",
+			cfg:  identity.Config{Kind: identity.KindDisk, TrustDomain: "omega.local", Dir: filepath.Join(t.TempDir(), "ca")},
+		},
+		{
+			name:    "unknown kind",
+			cfg:     identity.Config{Kind: identity.Kind("ldap"), TrustDomain: "omega.local"},
+			wantErr: "unknown kind",
+		},
+		{
+			name:    "missing trust domain",
+			cfg:     identity.Config{Kind: identity.KindDisk, Dir: filepath.Join(t.TempDir(), "ca")},
+			wantErr: "trust domain is required",
+		},
+		{
+			name:    "disk missing dir",
+			cfg:     identity.Config{Kind: identity.KindDisk, TrustDomain: "omega.local"},
+			wantErr: "requires Dir",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := identity.New(tc.cfg)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if a.TrustDomain().Name() != "omega.local" {
+				t.Errorf("trust domain: got %q want omega.local", a.TrustDomain().Name())
+			}
+		})
 	}
 }

@@ -1,0 +1,22 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: web
+  namespace: default
+spec:
+  secretName: web-tls
+  commonName: web
+  duration: 1h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  uris:
+    - spiffe://omega.local/example/web
+  usages:
+    - server auth
+    - client auth
+  issuerRef:
+    name: omega
+    kind: OmegaClusterIssuer
+    group: omega.0-draft.github.io

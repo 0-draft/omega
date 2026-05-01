@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kanywst/omega/internal/server/storage"
+	"github.com/0-draft/omega/internal/server/storage"
 )
 
 func newDomainCommand() *cobra.Command {
@@ -64,6 +64,7 @@ func newDomainCommand() *cobra.Command {
 }
 
 func doGET(w io.Writer, url string) error {
+	// #nosec G107 -- url is built from operator-supplied --server flag, not untrusted input.
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)

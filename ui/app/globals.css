@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+/*
+ * Omega UI tokens.
+ *
+ * One accent. Everything else grayscale. No gradients. No shadows on cards.
+ * Numbers in oklch so dark/light stay perceptually balanced.
+ */
+
+@theme {
+  /* Greyscale ramp — 50 → 950, oklch lightness only */
+  --color-bg: oklch(13% 0 0);
+  --color-bg-raised: oklch(17% 0 0);
+  --color-bg-muted: oklch(20% 0 0);
+  --color-line: oklch(26% 0 0);
+  --color-line-strong: oklch(34% 0 0);
+  --color-fg: oklch(96% 0 0);
+  --color-fg-muted: oklch(72% 0 0);
+  --color-fg-subtle: oklch(55% 0 0);
+
+  /* The single accent. amber-ish, gold-leaning — references Ω. */
+  --color-accent: oklch(78% 0.14 75);
+  --color-accent-fg: oklch(20% 0.05 75);
+
+  /* Status pills. Sparingly. */
+  --color-ok: oklch(72% 0.13 150);
+  --color-warn: oklch(78% 0.15 80);
+  --color-err: oklch(64% 0.18 25);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  --radius: 6px;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/*
+ * Selection: the accent, never the OS blue. Tiny detail, hand-crafted tell.
+ */
+::selection {
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+
+/* Focus rings — visible, intentional, accent-colored. No outline:none anywhere. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+/* Scrollbars: thin, monochrome. Default browser bars look generic. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}

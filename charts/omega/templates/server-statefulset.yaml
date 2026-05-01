@@ -1,0 +1,100 @@
+{{- if .Values.server.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "omega.serverName" . }}
+  labels:
+{{ include "omega.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.server.replicas }}
+  serviceName: {{ include "omega.serverName" . }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "omega.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+{{ include "omega.commonLabels" . | indent 8 }}
+        app.kubernetes.io/component: server
+    spec:
+      serviceAccountName: {{ include "omega.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: server
+          image: {{ include "omega.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args:
+            - server
+            - --http-addr={{ .Values.server.httpAddr }}
+            - --trust-domain={{ .Values.server.trustDomain }}
+            - --data-dir={{ .Values.server.dataDir }}
+            {{- if .Values.server.policyDir }}
+            - --policy-dir={{ .Values.server.policyDir }}
+            {{- end }}
+            {{- range .Values.server.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.server.dataDir }}
+            {{- if and .Values.policy.inline (gt (len .Values.policy.inline) 0) .Values.server.policyDir }}
+            - name: policy
+              mountPath: {{ .Values.server.policyDir }}
+              readOnly: true
+            {{- end }}
+      {{- $hasPolicy := and .Values.policy.inline (gt (len .Values.policy.inline) 0) .Values.server.policyDir -}}
+      {{- $hasEmpty := not .Values.server.persistence.enabled -}}
+      {{- if or $hasPolicy $hasEmpty }}
+      volumes:
+        {{- if $hasPolicy }}
+        - name: policy
+          configMap:
+            name: {{ include "omega.serverName" . }}-policy
+        {{- end }}
+        {{- if $hasEmpty }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- end }}
+  {{- if .Values.server.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.server.persistence.size }}
+        {{- with .Values.server.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,15 @@
+{{- if and .Values.server.enabled .Values.policy.inline }}
+{{- if gt (len .Values.policy.inline) 0 }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "omega.serverName" . }}-policy
+  labels:
+{{ include "omega.commonLabels" . | indent 4 }}
+data:
+{{- range $name, $body := .Values.policy.inline }}
+  {{ $name }}: |
+{{ $body | indent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}

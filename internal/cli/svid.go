@@ -18,9 +18,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
-	"github.com/kanywst/omega/internal/server/api"
+	"github.com/0-draft/omega/internal/server/api"
 )
 
 func newSVIDCommand() *cobra.Command {
@@ -186,6 +187,39 @@ func newSVIDCommand() *cobra.Command {
 	issue.Flags().StringVar(&spiffeID, "spiffe-id", "", "SPIFFE ID to issue (e.g. spiffe://omega.local/example/web)")
 	issue.Flags().StringVar(&outDir, "out-dir", "", "directory to write svid.pem / bundle.pem / key.pem (default: stdout)")
 
-	cmd.AddCommand(fetch, issue)
+	var (
+		jwtSocket   string
+		jwtAudience []string
+	)
+	jwtFetch := &cobra.Command{
+		Use:   "jwt-fetch",
+		Short: "Fetch a JWT-SVID via the local agent (SPIFFE Workload API)",
+		RunE: func(c *cobra.Command, _ []string) error {
+			if len(jwtAudience) == 0 {
+				return fmt.Errorf("--audience is required (one or more)")
+			}
+			ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
+			defer cancel()
+			client, err := workloadapi.New(ctx, workloadapi.WithAddr("unix://"+jwtSocket))
+			if err != nil {
+				return fmt.Errorf("connect to %s: %w", jwtSocket, err)
+			}
+			defer client.Close()
+
+			svid, err := client.FetchJWTSVID(ctx, jwtsvid.Params{Audience: jwtAudience[0], ExtraAudiences: jwtAudience[1:]})
+			if err != nil {
+				return fmt.Errorf("fetch jwt: %w", err)
+			}
+			_, _ = fmt.Fprintf(c.OutOrStdout(), "# spiffe-id: %s\n", svid.ID)
+			_, _ = fmt.Fprintf(c.OutOrStdout(), "# audience:  %s\n", strings.Join(svid.Audience, ","))
+			_, _ = fmt.Fprintf(c.OutOrStdout(), "# expires:   %s\n", svid.Expiry.Format(time.RFC3339))
+			_, _ = fmt.Fprintln(c.OutOrStdout(), svid.Marshal())
+			return nil
+		},
+	}
+	jwtFetch.Flags().StringVar(&jwtSocket, "socket", "/tmp/omega-agent.sock", "Workload API unix socket")
+	jwtFetch.Flags().StringSliceVar(&jwtAudience, "audience", nil, "audience(s) the JWT-SVID is bound to (repeatable)")
+
+	cmd.AddCommand(fetch, issue, jwtFetch)
 	return cmd
 }

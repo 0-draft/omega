@@ -61,15 +61,29 @@ func loadFromDir(dir string) (*cedar.PolicySet, cedar.EntityMap, error) {
 
 	ps := cedar.NewPolicySet()
 	for _, path := range matches {
+		// #nosec G304 -- path comes from operator-supplied --policy-dir glob, not user input.
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read %s: %w", path, err)
 		}
-		fileSet, err := cedar.NewPolicySetFromBytes(filepath.Base(path), raw)
+		base := filepath.Base(path)
+		fileSet, err := cedar.NewPolicySetFromBytes(base, raw)
 		if err != nil {
 			return nil, nil, fmt.Errorf("parse %s: %w", path, err)
 		}
-		for id, p := range fileSet.All() {
+		// cedar-go names every parsed policy "policy0", "policy1", ... per
+		// file, which collides as soon as the operator splits policies
+		// across multiple .cedar files. Honour an explicit @id("...")
+		// annotation when present and otherwise fall back to a
+		// filename-stem-prefixed default - both forms collapse to a single
+		// stable, human-readable id that flows through to /access/v1
+		// reasons[] and the audit log.
+		stem := strings.TrimSuffix(base, filepath.Ext(base))
+		for autoID, p := range fileSet.All() {
+			id := cedar.PolicyID(stem + "::" + string(autoID))
+			if v, ok := p.Annotations()["id"]; ok && v != "" {
+				id = cedar.PolicyID(v)
+			}
 			if !ps.Add(id, p) {
 				return nil, nil, fmt.Errorf("duplicate policy id %q (defined again in %s)", id, path)
 			}
@@ -78,6 +92,7 @@ func loadFromDir(dir string) (*cedar.PolicySet, cedar.EntityMap, error) {
 
 	ents := cedar.EntityMap{}
 	entPath := filepath.Join(dir, "entities.json")
+	// #nosec G304 -- path is operator-controlled --policy-dir, not user input.
 	if raw, err := os.ReadFile(entPath); err == nil {
 		if err := json.Unmarshal(raw, &ents); err != nil {
 			return nil, nil, fmt.Errorf("parse %s: %w", entPath, err)
@@ -110,8 +125,8 @@ type EvalRequest struct {
 	Context  map[string]any `json:"context,omitempty"`
 }
 
-// EvalResponse is the AuthZEN decision response. We omit the optional
-// `context` field for the PoC.
+// EvalResponse is the AuthZEN decision response. The optional
+// `context` field defined by AuthZEN is intentionally omitted.
 type EvalResponse struct {
 	Decision bool     `json:"decision"`
 	Reasons  []string `json:"reasons,omitempty"`
@@ -125,17 +140,36 @@ func (e *Engine) Evaluate(req EvalRequest) (EvalResponse, error) {
 		return EvalResponse{}, err
 	}
 
+	principalUID := cedar.NewEntityUID(cedar.EntityType(req.Subject.Type), cedar.String(req.Subject.ID))
+	resourceUID := cedar.NewEntityUID(cedar.EntityType(req.Resource.Type), cedar.String(req.Resource.ID))
 	cedarReq := cedar.Request{
-		Principal: cedar.NewEntityUID(cedar.EntityType(req.Subject.Type), cedar.String(req.Subject.ID)),
+		Principal: principalUID,
 		Action:    cedar.NewEntityUID("Action", cedar.String(req.Action.Name)),
-		Resource:  cedar.NewEntityUID(cedar.EntityType(req.Resource.Type), cedar.String(req.Resource.ID)),
+		Resource:  resourceUID,
 		Context:   recordFromMap(req.Context),
 	}
 
 	e.mu.RLock()
 	ps := e.policies
-	ents := e.entities
+	baseEnts := e.entities
 	e.mu.RUnlock()
+
+	// Seed per-request entities for subject/resource attrs so policies can
+	// read `principal.kind`, `resource.x`, etc. without the operator
+	// pre-declaring every transient identity in entities.json. Static
+	// entities from LoadDir win on UID collision (we only fill in attrs
+	// when the operator did not already define the entity).
+	ents := baseEnts
+	overlays := requestEntities(principalUID, req.Subject.Attrs, resourceUID, req.Resource.Attrs)
+	if len(overlays) > 0 {
+		ents = baseEnts.Clone()
+		for uid, ent := range overlays {
+			if _, exists := ents[uid]; exists {
+				continue
+			}
+			ents[uid] = ent
+		}
+	}
 
 	ok, diag := cedar.Authorize(ps, ents, cedarReq)
 	resp := EvalResponse{Decision: bool(ok)}
@@ -157,10 +191,25 @@ func validate(r EvalRequest) error {
 	return nil
 }
 
+// requestEntities builds at most two ephemeral cedar entities (subject /
+// resource) carrying the attrs supplied on the request. Returned entries
+// are merged into a per-request clone of the static EntityMap and only
+// take effect when no static entity already exists for that UID.
+func requestEntities(subUID cedar.EntityUID, subAttrs map[string]any, resUID cedar.EntityUID, resAttrs map[string]any) cedar.EntityMap {
+	out := cedar.EntityMap{}
+	if len(subAttrs) > 0 {
+		out[subUID] = cedar.Entity{UID: subUID, Attributes: recordFromMap(subAttrs)}
+	}
+	if len(resAttrs) > 0 && resUID != subUID {
+		out[resUID] = cedar.Entity{UID: resUID, Attributes: recordFromMap(resAttrs)}
+	}
+	return out
+}
+
 // recordFromMap converts a JSON-decoded context map into a Cedar Record.
 // Only the JSON primitive shapes are bridged; nested arrays/objects fall
-// through as Cedar strings of their JSON representation, which keeps the
-// PoC honest without pretending to support full Cedar value translation.
+// through as Cedar strings of their JSON representation, which avoids
+// pretending to support full Cedar value translation.
 func recordFromMap(m map[string]any) cedar.Record {
 	if len(m) == 0 {
 		return cedar.NewRecord(cedar.RecordMap{})
@@ -185,6 +234,22 @@ func valueOf(v any) cedar.Value {
 		return cedar.String(x)
 	case float64:
 		return cedar.Long(int64(x))
+	case int:
+		return cedar.Long(int64(x))
+	case int64:
+		return cedar.Long(x)
+	case []string:
+		vals := make([]cedar.Value, 0, len(x))
+		for _, s := range x {
+			vals = append(vals, cedar.String(s))
+		}
+		return cedar.NewSet(vals...)
+	case []any:
+		vals := make([]cedar.Value, 0, len(x))
+		for _, e := range x {
+			vals = append(vals, valueOf(e))
+		}
+		return cedar.NewSet(vals...)
 	default:
 		raw, _ := json.Marshal(x)
 		return cedar.String(string(raw))

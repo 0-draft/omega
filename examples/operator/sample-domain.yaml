@@ -1,0 +1,16 @@
+---
+apiVersion: omega.0-draft.github.io/v1alpha1
+kind: OmegaDomain
+metadata:
+  name: media-news
+spec:
+  domainName: media.news
+  description: News-section workloads (managed by the Omega operator).
+---
+apiVersion: omega.0-draft.github.io/v1alpha1
+kind: OmegaDomain
+metadata:
+  name: payments
+spec:
+  domainName: payments
+  description: Payments workloads.

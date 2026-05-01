@@ -1,0 +1,7 @@
+---
+apiVersion: omega.0-draft.github.io/v1alpha1
+kind: OmegaClusterIssuer
+metadata:
+  name: omega
+spec:
+  url: http://127.0.0.1:18088

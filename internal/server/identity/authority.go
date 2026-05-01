@@ -1,8 +1,16 @@
 // Package identity owns the Omega CA and SVID issuance.
 //
-// PoC v0.0.1 uses a single self-signed CA per data-dir, ECDSA P-256.
-// HSM (PKCS#11) and KMS plugins land in v0.3 — the Authority struct is
-// intentionally tied to crypto.Signer so we can swap in a remote signer.
+// Authority is the pluggable signing surface. The default implementation
+// is a self-signed ECDSA P-256 CA persisted to disk; HSM (PKCS#11) and
+// cloud KMS (AWS / GCP / Azure) implementations are added by introducing
+// new Kind values to Config and routing through New. Every backend must
+// expose a crypto.Signer-compatible private key path: that constraint
+// is what lets remote signers slot in without changing callers.
+//
+// Callers should always go through New / LoadOrCreate and depend on the
+// Authority interface - never on a concrete type. The package-private
+// localAuthority struct is intentionally unexported so adding kinds in
+// the future does not break the public API.
 package identity
 
 import (
@@ -29,14 +37,90 @@ const (
 	svidValidity = 30 * time.Minute
 )
 
-type Authority struct {
+// Kind identifies which Authority implementation New should construct.
+// Empty / unset is treated as KindDisk for backwards compatibility.
+type Kind string
+
+const (
+	// KindDisk is the default self-signed CA persisted to data-dir/ca/.
+	// This is currently the only backing kind; HSM / KMS variants will
+	// register their own Kind values without changing this one.
+	KindDisk Kind = "disk"
+)
+
+// Config is the disjoint-union-style argument to New. Fields are read
+// only by the implementation matching Kind; for KindDisk the relevant
+// fields are Dir and TrustDomain. Future kinds will add their own
+// fields (e.g. KMSKeyARN, PKCS11ModulePath) without touching existing
+// callers.
+type Config struct {
+	Kind        Kind
+	TrustDomain string
+	// KindDisk
+	Dir string
+}
+
+// Authority is the signing + bundle interface every Omega CA backend
+// must satisfy. The methods are issuance-only on purpose: management
+// concerns (CA rotation, key escrow, audit) live elsewhere so that an
+// HSM-backed Authority does not need to expose its key material to
+// implement them.
+type Authority interface {
+	TrustDomain() spiffeid.TrustDomain
+	BundlePEM() []byte
+
+	IssueSVID(id spiffeid.ID, pub crypto.PublicKey) (*SVID, error)
+
+	IssueJWTSVID(id spiffeid.ID, audience []string, ttl time.Duration, extraClaims map[string]any) (*JWTSVID, error)
+	JWTKeyID() (string, error)
+	JWTBundle() ([]byte, error)
+	ValidateJWTSVID(token, audience string) (spiffeid.ID, error)
+	ValidatePresentedCertBinding(token, audience string, presented *x509.Certificate) (spiffeid.ID, error)
+	// ParseJWTSVIDClaims verifies signature + standard time claims and
+	// returns sub + the raw claims map without enforcing audience.
+	// Used by token-exchange flows where the input token's audience is
+	// not relevant to the new issuance.
+	ParseJWTSVIDClaims(token string) (spiffeid.ID, map[string]any, error)
+}
+
+// New builds an Authority from cfg. It is the only constructor that
+// understands Kind; LoadOrCreate is a thin convenience wrapper for the
+// disk default that keeps the original call sites unchanged.
+func New(cfg Config) (Authority, error) {
+	if cfg.TrustDomain == "" {
+		return nil, errors.New("identity: trust domain is required")
+	}
+	switch cfg.Kind {
+	case "", KindDisk:
+		if cfg.Dir == "" {
+			return nil, errors.New("identity: disk authority requires Dir")
+		}
+		return loadOrCreateDisk(cfg.Dir, cfg.TrustDomain)
+	default:
+		return nil, fmt.Errorf("identity: unknown kind %q (supported: %q)", cfg.Kind, KindDisk)
+	}
+}
+
+// LoadOrCreate is shorthand for New(Config{Kind: KindDisk, ...}). It is
+// retained because every existing call site (cli, tests) wired into the
+// disk default. Use New directly when picking a non-disk Kind.
+func LoadOrCreate(dir, trustDomain string) (Authority, error) {
+	return New(Config{Kind: KindDisk, TrustDomain: trustDomain, Dir: dir})
+}
+
+// localAuthority is the disk-backed implementation: ECDSA P-256
+// self-signed CA, key + cert in two PEM files. Unexported because new
+// Kinds will add their own structs and callers should not type-assert.
+type localAuthority struct {
 	trustDomain spiffeid.TrustDomain
 	cert        *x509.Certificate
 	key         crypto.Signer
 	bundlePEM   []byte
 }
 
-func LoadOrCreate(dir, trustDomain string) (*Authority, error) {
+var _ Authority = (*localAuthority)(nil)
+
+func loadOrCreateDisk(dir, trustDomain string) (*localAuthority, error) {
 	td, err := spiffeid.TrustDomainFromString(trustDomain)
 	if err != nil {
 		return nil, fmt.Errorf("trust domain: %w", err)
@@ -52,7 +136,7 @@ func LoadOrCreate(dir, trustDomain string) (*Authority, error) {
 	return createAuthority(td, keyPath, crtPath)
 }
 
-func createAuthority(td spiffeid.TrustDomain, keyPath, crtPath string) (*Authority, error) {
+func createAuthority(td spiffeid.TrustDomain, keyPath, crtPath string) (*localAuthority, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("gen ca key: %w", err)
@@ -88,17 +172,20 @@ func createAuthority(td spiffeid.TrustDomain, keyPath, crtPath string) (*Authori
 	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
 		return nil, err
 	}
+	// #nosec G306 -- ca.crt is the public root that workloads need to read.
 	if err := os.WriteFile(crtPath, crtPEM, 0o644); err != nil {
 		return nil, err
 	}
-	return &Authority{trustDomain: td, cert: cert, key: key, bundlePEM: crtPEM}, nil
+	return &localAuthority{trustDomain: td, cert: cert, key: key, bundlePEM: crtPEM}, nil
 }
 
-func loadAuthority(td spiffeid.TrustDomain, keyPath, crtPath string) (*Authority, error) {
+func loadAuthority(td spiffeid.TrustDomain, keyPath, crtPath string) (*localAuthority, error) {
+	// #nosec G304 -- keyPath comes from operator-supplied --data-dir, not user input.
 	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("read ca key: %w", err)
 	}
+	// #nosec G304 -- crtPath comes from operator-supplied --data-dir, not user input.
 	crtPEM, err := os.ReadFile(crtPath)
 	if err != nil {
 		return nil, fmt.Errorf("read ca cert: %w", err)
@@ -123,22 +210,23 @@ func loadAuthority(td spiffeid.TrustDomain, keyPath, crtPath string) (*Authority
 	if err != nil {
 		return nil, fmt.Errorf("parse ca cert: %w", err)
 	}
-	return &Authority{trustDomain: td, cert: cert, key: signer, bundlePEM: crtPEM}, nil
+	return &localAuthority{trustDomain: td, cert: cert, key: signer, bundlePEM: crtPEM}, nil
 }
 
-func (a *Authority) TrustDomain() spiffeid.TrustDomain { return a.trustDomain }
-func (a *Authority) BundlePEM() []byte                 { return a.bundlePEM }
+func (a *localAuthority) TrustDomain() spiffeid.TrustDomain { return a.trustDomain }
+func (a *localAuthority) BundlePEM() []byte                 { return a.bundlePEM }
 
 type SVID struct {
 	SPIFFEID  spiffeid.ID
 	CertPEM   []byte
 	BundlePEM []byte
+	NotBefore time.Time
 	NotAfter  time.Time
 }
 
 // IssueSVID signs an X.509-SVID for id over the public key in pub.
 // The SPIFFE ID must be a member of this authority's trust domain.
-func (a *Authority) IssueSVID(id spiffeid.ID, pub crypto.PublicKey) (*SVID, error) {
+func (a *localAuthority) IssueSVID(id spiffeid.ID, pub crypto.PublicKey) (*SVID, error) {
 	if id.IsZero() {
 		return nil, errors.New("spiffe id is empty")
 	}
@@ -169,6 +257,7 @@ func (a *Authority) IssueSVID(id spiffeid.ID, pub crypto.PublicKey) (*SVID, erro
 		SPIFFEID:  id,
 		CertPEM:   pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		BundlePEM: a.bundlePEM,
+		NotBefore: tpl.NotBefore,
 		NotAfter:  tpl.NotAfter,
 	}, nil
 }

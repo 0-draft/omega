@@ -1,0 +1,81 @@
+# examples/envoy-ext-authz/compose.yaml
+#
+# Self-contained ext_authz reference stack:
+#   - omega-server     (control plane + AuthZEN PDP, loads cedar policies)
+#   - authzen-adapter  (Envoy ext_authz <-> AuthZEN bridge)
+#   - envoy            (front proxy, ext_authz filter pointed at the adapter)
+#   - httpbin          (echo upstream so curl can verify routes round-trip)
+#
+# Run from this directory:
+#
+#     docker compose up --build
+#
+# Then:
+#   - http://localhost:28000/get   via envoy, gated by AuthZEN
+#   - http://localhost:28080       omega admin API
+#   - http://localhost:29901       envoy admin (stats, config_dump)
+#
+# (Ports are intentionally non-default so this example can run alongside
+# the top-level quickstart and the observability stack without colliding.)
+#
+# Tear down:
+#
+#     docker compose down -v
+
+name: omega-ext-authz
+
+services:
+  omega-server:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: omega:dev
+    user: "0:0"
+    command:
+      - server
+      - --http-addr=0.0.0.0:8080
+      - --data-dir=/var/lib/omega
+      - --policy-dir=/etc/omega/policies
+    ports:
+      - "28080:8080"
+    volumes:
+      - omega-data:/var/lib/omega
+      - ./policies:/etc/omega/policies:ro
+
+  authzen-adapter:
+    build:
+      context: ../..
+      dockerfile: examples/envoy-ext-authz/authzen-adapter/Dockerfile
+    image: omega-authzen-adapter:dev
+    command:
+      - --listen=:9000
+      - --omega-url=http://omega-server:8080
+      - --path-prefix=/authz
+      - --user-header=x-user
+      - --subject-type=User
+      - --resource-type=HttpPath
+      - --omega-timeout=2s
+    depends_on:
+      - omega-server
+
+  envoy:
+    image: envoyproxy/envoy:v1.32-latest
+    command:
+      - -c
+      - /etc/envoy/envoy.yaml
+      - --log-level
+      - info
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "28000:8000"
+      - "29901:9901"
+    depends_on:
+      - authzen-adapter
+      - httpbin
+
+  httpbin:
+    image: kennethreitz/httpbin:latest
+
+volumes:
+  omega-data:

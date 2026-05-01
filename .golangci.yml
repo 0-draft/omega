@@ -39,7 +39,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/kanywst/omega
+        - github.com/0-draft/omega
   exclusions:
     generated: lax
     paths:

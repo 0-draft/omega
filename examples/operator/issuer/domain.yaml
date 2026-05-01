@@ -1,0 +1,8 @@
+---
+apiVersion: omega.0-draft.github.io/v1alpha1
+kind: OmegaDomain
+metadata:
+  name: example
+spec:
+  domainName: example
+  description: Sample namespace for the cert-manager Issuer demo.

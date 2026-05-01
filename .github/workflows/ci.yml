@@ -3,16 +3,35 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: omega
+          POSTGRES_PASSWORD: omega
+          POSTGRES_DB: omega
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U omega -d omega"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      OMEGA_TEST_POSTGRES_DSN: postgres://omega:omega@127.0.0.1:5432/omega?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
           cache: true
       - name: build
         run: make build
@@ -25,7 +44,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
           cache: true
       - name: cross-compile (linux/darwin x amd64/arm64)
         run: make cross
@@ -36,10 +55,88 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
           cache: true
-      - name: end-to-end demo
+      - name: end-to-end demo (hello-svid)
         run: make demo
+
+  examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [federation, postgres, postgres-ha, mcp-a2a-delegation, audit-siem]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build omega and put on PATH
+        run: |
+          make build
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+      - name: run example demo
+        working-directory: examples/${{ matrix.example }}
+        run: make demo
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - name: helm lint
+        run: helm lint charts/omega
+      - name: helm template (render check)
+        run: helm template omega charts/omega > /dev/null
+
+  kind-operator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build omega and put on PATH
+        run: |
+          make build
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: omega-operator
+      - name: install OmegaDomain CRD
+        run: kubectl apply -f charts/omega/crds/omegadomain.yaml
+      - name: start omega control plane
+        run: |
+          omega server --http-addr 127.0.0.1:8080 --data-dir /tmp/omega-ci > /tmp/omega-server.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/healthz >/dev/null && break
+            sleep 1
+          done
+      - name: start operator (out-of-cluster, against host control plane)
+        run: |
+          omega operator \
+            --omega-url=http://127.0.0.1:8080 \
+            --metrics-addr=:8081 \
+            --health-addr=:8082 > /tmp/omega-operator.log 2>&1 &
+          sleep 5
+      - name: apply sample OmegaDomain
+        run: kubectl apply -f examples/operator/sample-domain.yaml
+      - name: wait for Ready
+        run: |
+          for _ in $(seq 1 30); do
+            ready=$(kubectl get omegadomain media-news -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+            [[ "$ready" == "True" ]] && exit 0
+            sleep 2
+          done
+          echo "OmegaDomain did not reach Ready in time"
+          kubectl describe omegadomain media-news || true
+          tail -50 /tmp/omega-operator.log || true
+          tail -50 /tmp/omega-server.log || true
+          exit 1
 
   lint:
     runs-on: ubuntu-latest
@@ -47,8 +144,99 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
           cache: true
       - uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: scan
+        run: govulncheck ./...
+
+  gosec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: gosec
+        uses: securego/gosec@master
+        with:
+          args: -exclude-dir=examples ./...
+
+  markdownlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: '**/*.md'
+          config: .markdownlint-cli2.jsonc
+
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: log in to ghcr.io
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/0-draft/omega
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+      - name: build (and push on tag)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  chart-release:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, helm]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - uses: helm/chart-releaser-action@v1
+        with:
+          charts_dir: charts
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

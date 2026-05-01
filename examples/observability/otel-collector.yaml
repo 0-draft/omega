@@ -1,0 +1,33 @@
+# otel-collector config for the Omega observability example.
+#
+# Receives OTLP/HTTP from omega-server on :4318 and forwards spans to the
+# jaeger all-in-one container's OTLP/gRPC receiver. Real deployments add a
+# tail-based sampler here, plus a second exporter for the SIEM.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 2s
+    send_batch_size: 512
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  debug:
+    verbosity: normal
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger, debug]

@@ -1,0 +1,205 @@
+package identity_test
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+
+	"github.com/0-draft/omega/internal/server/identity"
+)
+
+func newTestAuthority(t *testing.T) identity.Authority {
+	t.Helper()
+	a, err := identity.LoadOrCreate(filepath.Join(t.TempDir(), "ca"), "omega.local")
+	if err != nil {
+		t.Fatalf("ca: %v", err)
+	}
+	return a
+}
+
+func TestJWTSVIDIssueAndValidate(t *testing.T) {
+	a := newTestAuthority(t)
+	id := spiffeid.RequireFromString("spiffe://omega.local/example/web")
+
+	svid, err := a.IssueJWTSVID(id, []string{"https://api.example.com"}, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if svid.Token == "" {
+		t.Fatal("empty token")
+	}
+	if !strings.Contains(svid.Token, ".") {
+		t.Fatal("not a JWT")
+	}
+
+	got, err := a.ValidateJWTSVID(svid.Token, "https://api.example.com")
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got.String() != id.String() {
+		t.Errorf("sub mismatch: %s vs %s", got, id)
+	}
+}
+
+func TestJWTSVIDRejectsForeignTrustDomain(t *testing.T) {
+	a := newTestAuthority(t)
+	id := spiffeid.RequireFromString("spiffe://other.example/foo")
+	if _, err := a.IssueJWTSVID(id, []string{"x"}, 0, nil); err == nil {
+		t.Fatal("expected trust domain error")
+	}
+}
+
+func TestJWTSVIDRejectsEmptyAudience(t *testing.T) {
+	a := newTestAuthority(t)
+	id := spiffeid.RequireFromString("spiffe://omega.local/x")
+	if _, err := a.IssueJWTSVID(id, nil, 0, nil); err == nil {
+		t.Fatal("expected audience error")
+	}
+}
+
+func TestJWTSVIDRejectsWrongAudience(t *testing.T) {
+	a := newTestAuthority(t)
+	id := spiffeid.RequireFromString("spiffe://omega.local/x")
+	svid, err := a.IssueJWTSVID(id, []string{"audA"}, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if _, err := a.ValidateJWTSVID(svid.Token, "audB"); err == nil {
+		t.Fatal("expected audience mismatch")
+	}
+}
+
+func TestJWTBundleHasOneKey(t *testing.T) {
+	a := newTestAuthority(t)
+	raw, err := a.JWTBundle()
+	if err != nil {
+		t.Fatalf("bundle: %v", err)
+	}
+	var jwks struct {
+		Keys []map[string]string `json:"keys"`
+	}
+	if err := json.Unmarshal(raw, &jwks); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(jwks.Keys) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(jwks.Keys))
+	}
+	k := jwks.Keys[0]
+	if k["kty"] != "EC" || k["crv"] != "P-256" || k["alg"] != "ES256" {
+		t.Errorf("wrong key params: %v", k)
+	}
+}
+
+func issueTestCert(t *testing.T, a identity.Authority, sub string) *x509.Certificate {
+	t.Helper()
+	id := spiffeid.RequireFromString(sub)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	svid, err := a.IssueSVID(id, &key.PublicKey)
+	if err != nil {
+		t.Fatalf("issue svid: %v", err)
+	}
+	block, _ := pem.Decode(svid.CertPEM)
+	if block == nil {
+		t.Fatal("svid pem decode")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse cert: %v", err)
+	}
+	return cert
+}
+
+func TestValidatePresentedCertBindingMatches(t *testing.T) {
+	a := newTestAuthority(t)
+	id := spiffeid.RequireFromString("spiffe://omega.local/example/web")
+	cert := issueTestCert(t, a, id.String())
+	thumb := identity.CertThumbprintS256(cert)
+
+	svid, err := a.IssueJWTSVID(id, []string{"aud"}, time.Minute, map[string]any{
+		"cnf": map[string]string{"x5t#S256": thumb},
+	})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	got, err := a.ValidatePresentedCertBinding(svid.Token, "aud", cert)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got.String() != id.String() {
+		t.Errorf("sub mismatch: %s vs %s", got, id)
+	}
+}
+
+func TestValidatePresentedCertBindingMismatch(t *testing.T) {
+	a := newTestAuthority(t)
+	id := spiffeid.RequireFromString("spiffe://omega.local/example/web")
+	bound := issueTestCert(t, a, id.String())
+	other := issueTestCert(t, a, "spiffe://omega.local/example/other")
+
+	svid, err := a.IssueJWTSVID(id, []string{"aud"}, time.Minute, map[string]any{
+		"cnf": map[string]string{"x5t#S256": identity.CertThumbprintS256(bound)},
+	})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if _, err := a.ValidatePresentedCertBinding(svid.Token, "aud", other); err == nil {
+		t.Fatal("expected binding mismatch error")
+	}
+}
+
+func TestValidatePresentedCertBindingMissingCert(t *testing.T) {
+	a := newTestAuthority(t)
+	id := spiffeid.RequireFromString("spiffe://omega.local/example/web")
+	cert := issueTestCert(t, a, id.String())
+	svid, err := a.IssueJWTSVID(id, []string{"aud"}, time.Minute, map[string]any{
+		"cnf": map[string]string{"x5t#S256": identity.CertThumbprintS256(cert)},
+	})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if _, err := a.ValidatePresentedCertBinding(svid.Token, "aud", nil); err == nil {
+		t.Fatal("expected missing cert error")
+	}
+}
+
+func TestValidatePresentedCertBindingNoCnfPasses(t *testing.T) {
+	a := newTestAuthority(t)
+	id := spiffeid.RequireFromString("spiffe://omega.local/example/web")
+	svid, err := a.IssueJWTSVID(id, []string{"aud"}, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	got, err := a.ValidatePresentedCertBinding(svid.Token, "aud", nil)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got.String() != id.String() {
+		t.Errorf("sub mismatch: %s vs %s", got, id)
+	}
+}
+
+func TestJWTSVIDExtraClaims(t *testing.T) {
+	a := newTestAuthority(t)
+	id := spiffeid.RequireFromString("spiffe://omega.local/x")
+	svid, err := a.IssueJWTSVID(id, []string{"x"}, 0, map[string]any{
+		"cnf": map[string]string{"x5t#S256": "abc"},
+	})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if !strings.Contains(svid.Token, ".") {
+		t.Fatal("token shape")
+	}
+}

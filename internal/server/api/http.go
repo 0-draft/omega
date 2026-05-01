@@ -1,45 +1,273 @@
-// Package api exposes the Omega control plane over HTTP/JSON.
-//
-// PoC v0.0.1 keeps things simple: net/http + encoding/json. The
-// AuthZEN evaluation endpoint and gRPC Workload API land in W3 / W2.
+// Package api exposes the Omega control plane over HTTP/JSON. The
+// surface is intentionally small: net/http + encoding/json so the
+// reference implementation stays auditable. AuthZEN evaluation lives
+// at /access/v1/evaluation; the gRPC Workload API is served separately
+// from the agent process.
 package api
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
-	"github.com/kanywst/omega/internal/server/identity"
-	"github.com/kanywst/omega/internal/server/policy"
-	"github.com/kanywst/omega/internal/server/storage"
+	"github.com/0-draft/omega/internal/server/federation"
+	"github.com/0-draft/omega/internal/server/identity"
+	"github.com/0-draft/omega/internal/server/metrics"
+	"github.com/0-draft/omega/internal/server/policy"
+	"github.com/0-draft/omega/internal/server/storage"
+	"github.com/0-draft/omega/internal/server/tracing"
 )
 
+var tracer = tracing.Tracer("github.com/0-draft/omega/internal/server/api")
+
 type Server struct {
-	store  *storage.Store
-	ca     *identity.Authority
-	policy *policy.Engine
+	store                 *storage.Store
+	ca                    identity.Authority
+	policy                *policy.Engine
+	federation            *federation.Registry
+	enforceExchangePolicy bool
 }
 
-func NewServer(store *storage.Store, ca *identity.Authority, pdp *policy.Engine) *Server {
+func NewServer(store *storage.Store, ca identity.Authority, pdp *policy.Engine) *Server {
 	return &Server{store: store, ca: ca, policy: pdp}
+}
+
+// WithFederation wires a federation registry into the server. Passing
+// nil disables the /v1/federation/bundles endpoint (it returns 404).
+func (s *Server) WithFederation(reg *federation.Registry) *Server {
+	s.federation = reg
+	return s
+}
+
+// WithEnforceTokenExchangePolicy turns on AuthZEN evaluation for
+// POST /v1/token/exchange. When enabled the handler builds a
+// `{action: token.exchange}` request whose subject carries kind /
+// acting_for / delegation_chain / scope attrs and whose context carries
+// delegation_depth + requested_audience, then routes the decision
+// through the configured policy engine. When disabled (default) the
+// handler keeps the lightweight `requested == actor` check as the sole
+// gate, for operators who have not yet authored token-exchange
+// policies.
+func (s *Server) WithEnforceTokenExchangePolicy(v bool) *Server {
+	s.enforceExchangePolicy = v
+	return s
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", s.healthz)
-	mux.HandleFunc("POST /v1/domains", s.createDomain)
-	mux.HandleFunc("GET /v1/domains", s.listDomains)
-	mux.HandleFunc("GET /v1/domains/{name}", s.getDomain)
-	mux.HandleFunc("POST /v1/svid", s.issueSVID)
-	mux.HandleFunc("GET /v1/bundle", s.getBundle)
-	mux.HandleFunc("POST /access/v1/evaluation", s.evaluateAccess)
+	// Each route is wrapped per-pattern: metrics.InstrumentHandler tags
+	// the route label, then otelhttp.NewHandler wraps that and emits one
+	// server span per request named after the registered pattern. We do
+	// this per-route (rather than wrapping the mux) so the span name and
+	// http.route attribute match the registered Go 1.22 ServeMux pattern
+	// - wrapping the bare mux loses the pattern because otelhttp runs
+	// before mux dispatch sets r.Pattern.
+	handle := func(pattern string, h http.HandlerFunc) {
+		instrumented := metrics.InstrumentHandler(pattern, h)
+		mux.Handle(pattern, otelhttp.NewHandler(instrumented, pattern))
+	}
+	// Endpoints whose handler ends up calling AppendAudit / CreateDomain
+	// are wrapped with leaderOnly so that, when the Postgres advisory
+	// lock has been promised to a different replica, this process fails
+	// fast with 503 + Retry-After instead of hitting ErrNotLeader deeper
+	// in the call stack.
+	leaderOnly := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !s.store.IsLeader() {
+				w.Header().Set("Retry-After", "1")
+				writeErr(w, http.StatusServiceUnavailable, storage.ErrNotLeader)
+				return
+			}
+			h(w, r)
+		}
+	}
+	handle("GET /healthz", s.healthz)
+	handle("GET /v1/leader", s.leaderState)
+	handle("POST /v1/domains", leaderOnly(s.createDomain))
+	handle("GET /v1/domains", s.listDomains)
+	handle("GET /v1/domains/{name}", s.getDomain)
+	handle("POST /v1/svid", leaderOnly(s.issueSVID))
+	handle("GET /v1/bundle", s.getBundle)
+	handle("POST /access/v1/evaluation", leaderOnly(s.evaluateAccess))
+	handle("GET /v1/audit", s.listAudit)
+	handle("GET /v1/audit/verify", s.verifyAudit)
+	handle("POST /v1/svid/jwt", leaderOnly(s.issueJWTSVID))
+	handle("POST /v1/token/exchange", leaderOnly(s.tokenExchange))
+	handle("GET /v1/jwt/bundle", s.getJWTBundle)
+	handle("GET /v1/federation/bundles", s.getFederationBundles)
+	mux.Handle("GET /metrics", metrics.Handler())
 	return mux
+}
+
+// LeaderStateResponse is the shape of GET /v1/leader. Operators and
+// load balancers use it to route writes only to the current leader; the
+// payload is intentionally tiny so a probe over a slow link still
+// converges fast.
+type LeaderStateResponse struct {
+	IsLeader bool `json:"is_leader"`
+}
+
+func (s *Server) leaderState(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, LeaderStateResponse{IsLeader: s.store.IsLeader()})
+}
+
+// FederationBundlesResponse is the shape of GET /v1/federation/bundles.
+// Keys are SPIFFE trust domain names (no scheme), values are PEM-encoded
+// X.509 trust anchor bundles. The map always includes this server's own
+// trust domain; peers configured via --federate-with appear once their
+// bundles have been fetched at least once.
+type FederationBundlesResponse struct {
+	TrustDomains map[string]string `json:"trust_domains"`
+}
+
+func (s *Server) getFederationBundles(w http.ResponseWriter, _ *http.Request) {
+	if s.federation == nil {
+		writeErr(w, http.StatusNotFound, errors.New("federation is not configured on this server"))
+		return
+	}
+	raw := s.federation.Bundles()
+	out := make(map[string]string, len(raw))
+	for td, pem := range raw {
+		out[td] = string(pem)
+	}
+	writeJSON(w, http.StatusOK, FederationBundlesResponse{TrustDomains: out})
+}
+
+type IssueJWTSVIDRequest struct {
+	SPIFFEID   string   `json:"spiffe_id"`
+	Audience   []string `json:"audience"`
+	TTLSeconds int      `json:"ttl_seconds,omitempty"`
+	// BindCertThumbprint, if set, embeds an RFC 8705 cnf.x5t#S256 claim
+	// that binds the issued JWT-SVID to the SHA-256 thumbprint of the
+	// client X.509-SVID. Encoded as base64url (no padding).
+	BindCertThumbprint string `json:"bind_cert_thumbprint,omitempty"`
+}
+
+type IssueJWTSVIDResponse struct {
+	Token     string    `json:"token"`
+	SPIFFEID  string    `json:"spiffe_id"`
+	Audience  []string  `json:"audience"`
+	IssuedAt  time.Time `json:"issued_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	KeyID     string    `json:"kid"`
+}
+
+func (s *Server) issueJWTSVID(w http.ResponseWriter, r *http.Request) {
+	var req IssueJWTSVIDRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
+		return
+	}
+	id, err := spiffeid.FromString(req.SPIFFEID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("spiffe_id: %w", err))
+		return
+	}
+	if len(req.Audience) == 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("audience is required"))
+		return
+	}
+	ttl := time.Duration(req.TTLSeconds) * time.Second
+	var extra map[string]any
+	if req.BindCertThumbprint != "" {
+		extra = map[string]any{
+			"cnf": map[string]string{"x5t#S256": req.BindCertThumbprint},
+		}
+	}
+	_, issueSpan := tracer.Start(r.Context(), "ca.IssueJWTSVID",
+		trace.WithAttributes(
+			attribute.String("spiffe.id", id.String()),
+			attribute.StringSlice("jwt.audience", req.Audience),
+			attribute.Bool("rfc8705.bound", req.BindCertThumbprint != ""),
+		),
+	)
+	svid, err := s.ca.IssueJWTSVID(id, req.Audience, ttl, extra)
+	if err != nil {
+		issueSpan.RecordError(err)
+		issueSpan.SetStatus(codes.Error, "issue jwt svid")
+		issueSpan.End()
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	issueSpan.SetAttributes(attribute.String("jwt.kid", svid.KeyID))
+	issueSpan.End()
+	metrics.SVIDIssued.WithLabelValues("jwt").Inc()
+	auditPayload := map[string]any{
+		"audience":   svid.Audience,
+		"kid":        svid.KeyID,
+		"issued_at":  svid.IssuedAt,
+		"expires_at": svid.ExpiresAt,
+	}
+	if req.BindCertThumbprint != "" {
+		auditPayload["cnf_x5t_s256"] = req.BindCertThumbprint
+	}
+	s.audit(r.Context(), storage.AuditEvent{
+		Kind:     "svid.issue.jwt",
+		Subject:  svid.SPIFFEID,
+		Decision: "ok",
+		Payload:  mustJSON(auditPayload),
+	})
+	writeJSON(w, http.StatusOK, IssueJWTSVIDResponse{
+		Token:     svid.Token,
+		SPIFFEID:  svid.SPIFFEID,
+		Audience:  svid.Audience,
+		IssuedAt:  svid.IssuedAt,
+		ExpiresAt: svid.ExpiresAt,
+		KeyID:     svid.KeyID,
+	})
+}
+
+func (s *Server) getJWTBundle(w http.ResponseWriter, _ *http.Request) {
+	raw, err := s.ca.JWTBundle()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/jwk-set+json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+// audit emits one audit_log row. Failures are logged but never block the
+// caller's response - the HTTP request has already succeeded by the time
+// audit is called.
+func (s *Server) audit(ctx context.Context, ev storage.AuditEvent) {
+	ctx, span := tracer.Start(ctx, "audit.append",
+		trace.WithAttributes(
+			attribute.String("audit.kind", ev.Kind),
+			attribute.String("audit.subject", ev.Subject),
+			attribute.String("audit.decision", ev.Decision),
+		),
+	)
+	defer span.End()
+	if _, err := s.store.AppendAudit(ctx, ev); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "audit append failed")
+		slog.Error("audit append failed", "kind", ev.Kind, "err", err)
+		return
+	}
+	metrics.AuditAppended.WithLabelValues(ev.Kind).Inc()
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return b
 }
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -61,6 +289,13 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		writeErr(w, http.StatusBadRequest, err)
 	default:
+		metrics.DomainsCreated.Inc()
+		s.audit(r.Context(), storage.AuditEvent{
+			Kind:     "domain.create",
+			Subject:  created.Name,
+			Decision: "ok",
+			Payload:  mustJSON(created),
+		})
 		writeJSON(w, http.StatusCreated, created)
 	}
 }
@@ -125,11 +360,29 @@ func (s *Server) issueSVID(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("csr: signature: %w", err))
 		return
 	}
+	_, issueSpan := tracer.Start(r.Context(), "ca.IssueSVID",
+		trace.WithAttributes(attribute.String("spiffe.id", id.String())),
+	)
 	svid, err := s.ca.IssueSVID(id, csr.PublicKey)
 	if err != nil {
+		issueSpan.RecordError(err)
+		issueSpan.SetStatus(codes.Error, "issue x509 svid")
+		issueSpan.End()
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	issueSpan.SetAttributes(attribute.String("svid.not_after", svid.NotAfter.Format(time.RFC3339)))
+	issueSpan.End()
+	metrics.SVIDIssued.WithLabelValues("x509").Inc()
+	s.audit(r.Context(), storage.AuditEvent{
+		Kind:     "svid.issue.x509",
+		Subject:  id.String(),
+		Decision: "ok",
+		Payload: mustJSON(map[string]any{
+			"not_before": svid.NotBefore,
+			"not_after":  svid.NotAfter,
+		}),
+	})
 	writeJSON(w, http.StatusOK, IssueSVIDResponse{
 		SVID:      string(svid.CertPEM),
 		Bundle:    string(svid.BundlePEM),
@@ -143,12 +396,71 @@ func (s *Server) evaluateAccess(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
+	_, evalSpan := tracer.Start(r.Context(), "policy.Evaluate",
+		trace.WithAttributes(
+			attribute.String("authzen.subject.id", req.Subject.ID),
+			attribute.String("authzen.subject.type", req.Subject.Type),
+			attribute.String("authzen.action", req.Action.Name),
+			attribute.String("authzen.resource.type", req.Resource.Type),
+			attribute.String("authzen.resource.id", req.Resource.ID),
+		),
+	)
+	start := time.Now()
 	resp, err := s.policy.Evaluate(req)
+	metrics.DecisionLatency.Observe(time.Since(start).Seconds())
 	if err != nil {
+		evalSpan.RecordError(err)
+		evalSpan.SetStatus(codes.Error, "evaluate")
+		evalSpan.End()
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	decision := "deny"
+	if resp.Decision {
+		decision = "allow"
+	}
+	evalSpan.SetAttributes(
+		attribute.String("authzen.decision", decision),
+		attribute.StringSlice("authzen.reasons", resp.Reasons),
+	)
+	evalSpan.End()
+	metrics.Decisions.WithLabelValues(decision).Inc()
+	s.audit(r.Context(), storage.AuditEvent{
+		Kind:     "access.evaluate",
+		Subject:  req.Subject.ID,
+		Decision: decision,
+		Payload: mustJSON(map[string]any{
+			"request":  req,
+			"response": resp,
+		}),
+	})
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
+	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	events, err := s.store.ListAudit(r.Context(), since, limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if events == nil {
+		events = []storage.AuditEvent{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": events})
+}
+
+func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
+	bad, err := s.store.VerifyAudit(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"valid":         bad == 0,
+		"first_bad_seq": bad,
+	})
 }
 
 func (s *Server) getBundle(w http.ResponseWriter, _ *http.Request) {

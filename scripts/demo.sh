@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/demo.sh — end-to-end PoC demo of the Omega workload identity loop.
+# scripts/demo.sh — end-to-end demo of the Omega workload identity loop.
 #
 # Brings up:
 #   1. omega server  (control plane on :8080)

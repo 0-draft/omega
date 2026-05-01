@@ -1,0 +1,31 @@
+---
+# cert-manager's built-in approver only auto-approves CertificateRequests
+# whose signer name it has RBAC permission to "approve" via the synthetic
+# `signers.cert-manager.io` resource. External issuers must opt in by
+# granting cert-manager that permission for their group.
+#
+# https://cert-manager.io/docs/policy/approval/#approval-rbac
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cert-manager-controller-approve:omega-0-draft-github-io
+rules:
+  - apiGroups: ["cert-manager.io"]
+    resources: ["signers"]
+    verbs: ["approve"]
+    resourceNames:
+      - "omegaissuers.omega.0-draft.github.io/*"
+      - "omegaclusterissuers.omega.0-draft.github.io/*"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cert-manager-controller-approve:omega-0-draft-github-io
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cert-manager-controller-approve:omega-0-draft-github-io
+subjects:
+  - kind: ServiceAccount
+    name: cert-manager
+    namespace: cert-manager

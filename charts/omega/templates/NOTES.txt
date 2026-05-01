@@ -1,0 +1,21 @@
+Omega has been installed.
+
+Status: pre-alpha. Do not use in production.
+
+Server: {{ include "omega.serverName" . }} (StatefulSet, replicas: {{ .Values.server.replicas }})
+{{- if .Values.agent.enabled }}
+Agent : {{ include "omega.agentName" . }} (DaemonSet, socket: {{ .Values.agent.socketPath }})
+{{- end }}
+
+Test connectivity:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "omega.serverName" . }} {{ .Values.server.service.port }}:{{ .Values.server.service.port }}
+  curl -s http://127.0.0.1:{{ .Values.server.service.port }}/healthz
+
+Evaluate a policy decision (AuthZEN 1.0):
+
+  curl -sS -X POST http://127.0.0.1:{{ .Values.server.service.port }}/access/v1/evaluation \
+    -H 'Content-Type: application/json' \
+    -d '{"subject":{"type":"Spiffe","id":"spiffe://{{ .Values.server.trustDomain }}/example/web"},
+         "action":{"name":"GET"},
+         "resource":{"type":"HttpPath","id":"/api/foo"}}'

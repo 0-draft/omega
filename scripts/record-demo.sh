@@ -22,7 +22,7 @@ echo "[record-demo] writing cast to $OUT"
 asciinema rec \
   --overwrite \
   --idle-time-limit 1 \
-  --title "Omega PoC v0.0.1 — make demo" \
+  --title "Omega — make demo" \
   --command "make -C $ROOT demo" \
   "$OUT"
 

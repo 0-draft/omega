@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -16,11 +17,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kanywst/omega/internal/server/api"
-	"github.com/kanywst/omega/internal/server/identity"
-	"github.com/kanywst/omega/internal/server/policy"
-	"github.com/kanywst/omega/internal/server/storage"
+	"github.com/0-draft/omega/internal/server/api"
+	"github.com/0-draft/omega/internal/server/identity"
+	"github.com/0-draft/omega/internal/server/policy"
+	"github.com/0-draft/omega/internal/server/storage"
 )
+
+var b64RawURL = base64.RawURLEncoding
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -28,6 +31,12 @@ func newTestServer(t *testing.T) *httptest.Server {
 }
 
 func newTestServerWithPolicy(t *testing.T, pdp *policy.Engine) *httptest.Server {
+	t.Helper()
+	srv, _ := newTestServerWithStore(t, pdp)
+	return srv
+}
+
+func newTestServerWithStore(t *testing.T, pdp *policy.Engine) (*httptest.Server, *storage.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	store, err := storage.Open(filepath.Join(dir, "omega.db"))
@@ -41,7 +50,7 @@ func newTestServerWithPolicy(t *testing.T, pdp *policy.Engine) *httptest.Server 
 	}
 	srv := httptest.NewServer(api.NewServer(store, ca, pdp).Handler())
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, store
 }
 
 func TestHTTPDomainRoundTrip(t *testing.T) {
@@ -234,6 +243,176 @@ func TestHTTPAccessEvaluationBadRequest(t *testing.T) {
 	}
 }
 
+func TestHTTPAuditCapturesEvents(t *testing.T) {
+	srv := newTestServer(t)
+
+	if _, err := http.Post(srv.URL+"/v1/domains", "application/json",
+		strings.NewReader(`{"name":"audit-domain"}`)); err != nil {
+		t.Fatalf("post domain: %v", err)
+	}
+
+	body := []byte(`{
+  "subject":  {"type":"Spiffe","id":"spiffe://omega.local/example/web"},
+  "action":   {"name":"GET"},
+  "resource": {"type":"HttpPath","id":"/api/foo"}
+}`)
+	if _, err := http.Post(srv.URL+"/access/v1/evaluation", "application/json", bytes.NewReader(body)); err != nil {
+		t.Fatalf("post eval: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/v1/audit?limit=10")
+	if err != nil {
+		t.Fatalf("get audit: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("audit status: %d", resp.StatusCode)
+	}
+	var page struct {
+		Items []storage.AuditEvent `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if len(page.Items) < 2 {
+		t.Fatalf("audit items: got %d want >= 2", len(page.Items))
+	}
+	kinds := make(map[string]bool)
+	for _, ev := range page.Items {
+		kinds[ev.Kind] = true
+	}
+	if !kinds["domain.create"] || !kinds["access.evaluate"] {
+		t.Errorf("missing audit kinds: %v", kinds)
+	}
+
+	verifyResp, err := http.Get(srv.URL + "/v1/audit/verify")
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	defer verifyResp.Body.Close()
+	var verify struct {
+		Valid       bool  `json:"valid"`
+		FirstBadSeq int64 `json:"first_bad_seq"`
+	}
+	if err := json.NewDecoder(verifyResp.Body).Decode(&verify); err != nil {
+		t.Fatalf("decode verify: %v", err)
+	}
+	if !verify.Valid {
+		t.Errorf("audit chain invalid at seq %d", verify.FirstBadSeq)
+	}
+}
+
+func TestHTTPJWTSVIDIssueAndBundle(t *testing.T) {
+	srv := newTestServer(t)
+
+	body, _ := json.Marshal(api.IssueJWTSVIDRequest{
+		SPIFFEID:   "spiffe://omega.local/example/web",
+		Audience:   []string{"https://api.example.com"},
+		TTLSeconds: 60,
+	})
+	resp, err := http.Post(srv.URL+"/v1/svid/jwt", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d want 200 (body=%s)", resp.StatusCode, raw)
+	}
+	var out api.IssueJWTSVIDResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Token == "" || out.SPIFFEID != "spiffe://omega.local/example/web" {
+		t.Errorf("bad response: %+v", out)
+	}
+	if out.KeyID == "" {
+		t.Error("missing kid")
+	}
+
+	bResp, err := http.Get(srv.URL + "/v1/jwt/bundle")
+	if err != nil {
+		t.Fatalf("bundle: %v", err)
+	}
+	defer bResp.Body.Close()
+	if bResp.StatusCode != http.StatusOK {
+		t.Fatalf("bundle status: %d", bResp.StatusCode)
+	}
+	if ct := bResp.Header.Get("Content-Type"); ct != "application/jwk-set+json" {
+		t.Errorf("content-type: %q", ct)
+	}
+	var jwks struct {
+		Keys []map[string]string `json:"keys"`
+	}
+	if err := json.NewDecoder(bResp.Body).Decode(&jwks); err != nil {
+		t.Fatalf("decode jwks: %v", err)
+	}
+	if len(jwks.Keys) != 1 || jwks.Keys[0]["kid"] != out.KeyID {
+		t.Errorf("kid mismatch: jwks=%v out=%s", jwks.Keys, out.KeyID)
+	}
+}
+
+func TestHTTPJWTSVIDBindsToCertThumbprint(t *testing.T) {
+	srv := newTestServer(t)
+
+	body, _ := json.Marshal(api.IssueJWTSVIDRequest{
+		SPIFFEID:           "spiffe://omega.local/example/web",
+		Audience:           []string{"aud"},
+		BindCertThumbprint: "AAAA-test-thumbprint",
+	})
+	resp, err := http.Post(srv.URL+"/v1/svid/jwt", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d want 200 (body=%s)", resp.StatusCode, raw)
+	}
+	var out api.IssueJWTSVIDResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	parts := strings.Split(out.Token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("not a JWS: %s", out.Token)
+	}
+	payload, err := base64DecodeRawURL(parts[1])
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatalf("unmarshal claims: %v", err)
+	}
+	cnf, ok := claims["cnf"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing cnf claim: %v", claims)
+	}
+	if cnf["x5t#S256"] != "AAAA-test-thumbprint" {
+		t.Errorf("cnf x5t#S256: got %v want AAAA-test-thumbprint", cnf["x5t#S256"])
+	}
+}
+
+func base64DecodeRawURL(s string) ([]byte, error) {
+	return b64RawURL.DecodeString(s)
+}
+
+func TestHTTPJWTSVIDRejectsEmptyAudience(t *testing.T) {
+	srv := newTestServer(t)
+	body, _ := json.Marshal(api.IssueJWTSVIDRequest{
+		SPIFFEID: "spiffe://omega.local/x",
+	})
+	resp, err := http.Post(srv.URL+"/v1/svid/jwt", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+}
+
 func TestHTTPSVIDRejectsForeignTrustDomain(t *testing.T) {
 	srv := newTestServer(t)
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -247,5 +426,74 @@ func TestHTTPSVIDRejectsForeignTrustDomain(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+}
+
+// Followers must reject writes with 503 + Retry-After: 1 so callers
+// can transparently retry against the elected leader. Reads (GETs)
+// stay open so observability and bundle distribution keep working.
+func TestHTTPLeaderGate(t *testing.T) {
+	srv, store := newTestServerWithStore(t, policy.New())
+	store.SetLeaderForTest(true, false)
+
+	cases := []struct {
+		method, path, body string
+	}{
+		{"POST", "/v1/domains", `{"name":"x"}`},
+		{"POST", "/v1/svid", `{"spiffe_id":"spiffe://omega.local/x","csr":""}`},
+		{"POST", "/access/v1/evaluation", `{"subject":{"type":"Spiffe","id":"spiffe://omega.local/x"},"action":{"name":"GET"},"resource":{"type":"HttpPath","id":"/"}}`},
+		{"POST", "/v1/svid/jwt", `{"spiffe_id":"spiffe://omega.local/x","audience":["a"]}`},
+	}
+	for _, tc := range cases {
+		req, _ := http.NewRequest(tc.method, srv.URL+tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", tc.method, tc.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("%s %s: status got %d want 503", tc.method, tc.path, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Retry-After"); got != "1" {
+			t.Errorf("%s %s: Retry-After got %q want %q", tc.method, tc.path, got, "1")
+		}
+	}
+
+	// GET endpoints must stay open even on a follower.
+	resp, err := http.Get(srv.URL + "/v1/domains")
+	if err != nil {
+		t.Fatalf("GET /v1/domains: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /v1/domains on follower: got %d want 200", resp.StatusCode)
+	}
+
+	// /v1/leader must reflect the simulated state.
+	resp, err = http.Get(srv.URL + "/v1/leader")
+	if err != nil {
+		t.Fatalf("GET /v1/leader: %v", err)
+	}
+	defer resp.Body.Close()
+	var ls struct {
+		IsLeader bool `json:"is_leader"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&ls); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if ls.IsLeader {
+		t.Errorf("/v1/leader: got is_leader=true on follower")
+	}
+
+	// Promote the store to leader and confirm writes succeed again.
+	store.SetLeaderForTest(true, true)
+	resp, err = http.Post(srv.URL+"/v1/domains", "application/json", strings.NewReader(`{"name":"after-promotion"}`))
+	if err != nil {
+		t.Fatalf("post after promotion: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("after promotion: got %d want 201", resp.StatusCode)
 	}
 }

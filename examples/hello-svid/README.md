@@ -32,7 +32,7 @@ the workload's identity is determined by which socket it dials. This is
 the simplest way to demo two distinct SPIFFE IDs on a single host
 without creating real OS users; production deployments will use
 attestor plugins (Kubernetes SAT, OIDC, process info) instead of the
-PoC's UID mapping.
+demo's UID mapping.
 
 ## Run it
 
@@ -50,7 +50,7 @@ Expected output:
 [demo] running hello-svid client
 client SPIFFE ID: spiffe://omega.local/hello/client
 hello from spiffe://omega.local/hello/server -> caller spiffe://omega.local/hello/client
-[demo] success — mTLS hello-svid handshake completed
+[demo] success - mTLS hello-svid handshake completed
 ```
 
 The `make demo` target tears every process down on exit and writes
