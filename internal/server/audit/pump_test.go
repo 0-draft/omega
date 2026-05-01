@@ -60,6 +60,25 @@ func openPumpStore(t *testing.T) *storage.Store {
 	return store
 }
 
+// runPump launches pump.Run in a goroutine and registers a cleanup that
+// cancels its context and waits for Run to return. Without the wait, a
+// straggling goroutine can race with t.TempDir's RemoveAll on SQLite WAL
+// files and trip "directory not empty" on cleanup.
+func runPump(t *testing.T, p *Pump) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	return ctx
+}
+
 func appendN(t *testing.T, store *storage.Store, n int) {
 	t.Helper()
 	ctx := context.Background()
@@ -89,9 +108,7 @@ func TestPumpDeliversAndAdvancesWatermark(t *testing.T) {
 	fwd := &fakeForwarder{name: "test"}
 	pump := NewPump(store, fwd, PumpConfig{BatchSize: 100, PollInterval: 20 * time.Millisecond})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go pump.Run(ctx)
+	ctx := runPump(t, pump)
 
 	waitFor(t, func() bool { return len(fwd.seenSeqs()) >= 3 }, "first 3 events delivered")
 
@@ -121,9 +138,7 @@ func TestPumpRetriesOnForwarderError(t *testing.T) {
 	fwd := &fakeForwarder{name: "test", failN: 2}
 	pump := NewPump(store, fwd, PumpConfig{BatchSize: 100, PollInterval: 10 * time.Millisecond})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go pump.Run(ctx)
+	ctx := runPump(t, pump)
 
 	// After the first 2 attempts fail, the 3rd should succeed and deliver
 	// the same seqs (1, 2). Watermark must not have advanced during failures.
@@ -156,9 +171,7 @@ func TestPumpResumesFromWatermark(t *testing.T) {
 	fwd := &fakeForwarder{name: "test"}
 	pump := NewPump(store, fwd, PumpConfig{BatchSize: 100, PollInterval: 10 * time.Millisecond})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go pump.Run(ctx)
+	runPump(t, pump)
 
 	waitFor(t, func() bool { return len(fwd.seenSeqs()) >= 2 }, "events 4 and 5 delivered")
 
@@ -175,9 +188,7 @@ func TestPumpHonoursBatchSize(t *testing.T) {
 	fwd := &fakeForwarder{name: "test"}
 	pump := NewPump(store, fwd, PumpConfig{BatchSize: 2, PollInterval: 10 * time.Millisecond})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go pump.Run(ctx)
+	runPump(t, pump)
 
 	waitFor(t, func() bool { return len(fwd.seenSeqs()) >= 5 }, "all 5 events delivered")
 
