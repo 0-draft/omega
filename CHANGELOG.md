@@ -27,6 +27,14 @@ changes (see [SECURITY.md](SECURITY.md)).
 - [`api/openapi.yaml`](api/openapi.yaml) - OpenAPI 3.1 specification
   covering every HTTP endpoint the control plane serves, with a CI
   `openapi` job that runs `redocly lint` on every push.
+- [`docs/threat-model.md`](docs/threat-model.md) - STRIDE-based
+  threat model covering the trust boundaries, assets, and threats
+  the project mitigates today, plus the out-of-scope threats and
+  their recommended out-of-tree mitigations.
+- [`docs/adr/`](docs/adr/) - Architecture Decision Records, with the
+  retroactive 0001-0004 covering Cedar as the default PDP, Postgres
+  advisory-lock HA over in-process Raft, short-lived SVIDs over
+  CRL/OCSP, and the single-binary three-roles packaging.
 
 ## [0.0.1] - 2026-05-01
 
