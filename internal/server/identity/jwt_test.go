@@ -246,6 +246,47 @@ func TestJWTSVIDIssClaimSetWhenIssuerConfigured(t *testing.T) {
 	}
 }
 
+func TestNewRejectsInvalidIssuerURL(t *testing.T) {
+	cases := []struct {
+		name   string
+		issuer string
+	}{
+		{"http scheme", "http://omega.example.com"},
+		{"missing scheme", "omega.example.com"},
+		{"missing host", "https://"},
+		{"with query", "https://omega.example.com?x=1"},
+		{"with fragment", "https://omega.example.com#frag"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := identity.New(identity.Config{
+				Kind:        identity.KindDisk,
+				TrustDomain: "omega.local",
+				Issuer:      tc.issuer,
+				Dir:         filepath.Join(t.TempDir(), "ca"),
+			})
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.issuer)
+			}
+		})
+	}
+}
+
+func TestNewNormalizesTrailingSlashOnIssuerURL(t *testing.T) {
+	a, err := identity.New(identity.Config{
+		Kind:        identity.KindDisk,
+		TrustDomain: "omega.local",
+		Issuer:      "https://omega.example.com/",
+		Dir:         filepath.Join(t.TempDir(), "ca"),
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if got := a.IssuerURL(); got != "https://omega.example.com" {
+		t.Fatalf("IssuerURL: got %q want %q", got, "https://omega.example.com")
+	}
+}
+
 // decodeJWTPayload base64url-decodes the second segment of a compact JWS
 // without verifying the signature. Tests use it to assert claim shape;
 // signature checks live in TestJWTSVIDIssueAndValidate.

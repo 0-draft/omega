@@ -103,6 +103,10 @@ func New(cfg Config) (Authority, error) {
 	if cfg.TrustDomain == "" {
 		return nil, errors.New("identity: trust domain is required")
 	}
+	issuer, err := normalizeIssuerURL(cfg.Issuer)
+	if err != nil {
+		return nil, err
+	}
 	switch cfg.Kind {
 	case "", KindDisk:
 		if cfg.Dir == "" {
@@ -112,11 +116,47 @@ func New(cfg Config) (Authority, error) {
 		if err != nil {
 			return nil, err
 		}
-		a.issuerURL = cfg.Issuer
+		a.issuerURL = issuer
 		return a, nil
 	default:
 		return nil, fmt.Errorf("identity: unknown kind %q (supported: %q)", cfg.Kind, KindDisk)
 	}
+}
+
+// normalizeIssuerURL enforces the OIDC Discovery 1.0 §3 rules on the
+// issuer URL: https scheme, a non-empty host, no query, no fragment.
+// A trailing slash is trimmed so jwks_uri concatenation always yields a
+// canonical URL. Empty input is allowed and means "no OIDC issuer
+// configured" - JWT-SVIDs then carry no `iss` claim and the discovery
+// endpoint returns 404.
+func normalizeIssuerURL(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("identity: issuer-url: %w", err)
+	}
+	if u.Scheme != "https" {
+		return "", fmt.Errorf("identity: issuer-url must use https scheme (got %q)", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", errors.New("identity: issuer-url must include a host")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("identity: issuer-url must not contain a query or fragment (OIDC Discovery 1.0 §3)")
+	}
+	// Trim a single trailing slash from the path so the canonical issuer
+	// is "https://host[/path]" and concat with "/v1/jwt/bundle" never
+	// double-slashes. Multiple trailing slashes ("//") would already be
+	// rejected by url.Parse semantics; one trailing "/" is benign and
+	// commonly typed by operators.
+	if u.Path == "/" {
+		u.Path = ""
+	} else if len(u.Path) > 1 && u.Path[len(u.Path)-1] == '/' {
+		u.Path = u.Path[:len(u.Path)-1]
+	}
+	return u.String(), nil
 }
 
 // LoadOrCreate is shorthand for New(Config{Kind: KindDisk, ...}). It is
