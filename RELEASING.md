@@ -72,7 +72,7 @@ the bootstrap orphan commit.
 
   ```text
   cosign verify ghcr.io/0-draft/omega:X.Y.Z \
-    --certificate-identity-regexp '^https://github.com/0-draft/omega/\.github/workflows/ci\.yml@refs/tags/v' \
+    --certificate-identity-regexp '^https://github\.com/0-draft/omega/\.github/workflows/ci\.yml@refs/tags/v' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   ```
 
@@ -81,7 +81,7 @@ the bootstrap orphan commit.
   ```text
   cosign verify-attestation ghcr.io/0-draft/omega:X.Y.Z \
     --type spdxjson \
-    --certificate-identity-regexp '^https://github.com/0-draft/omega/\.github/workflows/ci\.yml@refs/tags/v' \
+    --certificate-identity-regexp '^https://github\.com/0-draft/omega/\.github/workflows/ci\.yml@refs/tags/v' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   ```
 
@@ -90,7 +90,8 @@ the bootstrap orphan commit.
 
   ```text
   gh attestation verify oci://ghcr.io/0-draft/omega:X.Y.Z \
-    --repo 0-draft/omega
+    --repo 0-draft/omega \
+    --workflow ci.yml
   ```
 
 - A draft GitHub Release with the relevant `CHANGELOG.md` excerpt is
