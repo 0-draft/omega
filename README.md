@@ -134,7 +134,7 @@ Workload API gRPC (SPIFFE) is served by `omega agent` over a Unix socket and spe
 
 Omega is a deliberately bounded project. The charter is **workload and agent identity plus authorization control plane**: issuance, AuthZEN evaluation, federation, audit.
 
-The minimum demo path that ships in the source tree today is enumerated in [docs/scope.md](docs/scope.md). The rule for whether a new feature lands in Core, Plugin, or Out-of-tree lives in [docs/design-philosophy.md](docs/design-philosophy.md). Things Omega does *not* try to be (secrets storage, end-user login UX, service-mesh data plane, SIEM, agent runtime) are catalogued with their recommended alternatives in [docs/non-goals.md](docs/non-goals.md). Roadmap items are tracked as GitHub issues rather than pinned to versions.
+The minimum demo path that ships in the source tree today is enumerated in [docs/scope.md](docs/scope.md). The rule for whether a new feature lands in Core, Plugin, or Out-of-tree lives in [docs/design-philosophy.md](docs/design-philosophy.md). Things Omega does *not* try to be (secrets storage, end-user login UX, service-mesh data plane, SIEM, agent runtime) are catalogued with their recommended alternatives in [docs/non-goals.md](docs/non-goals.md). The forward-looking work is tracked in [ROADMAP.md](ROADMAP.md). The threat model the project mitigates today, with assets and STRIDE-categorised threats, lives in [docs/threat-model.md](docs/threat-model.md); the *why* behind the major design choices is recorded in [docs/adr/](docs/adr/).
 
 ## Observability
 
