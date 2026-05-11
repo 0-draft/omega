@@ -3,6 +3,7 @@ package audit_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -54,6 +55,45 @@ func startOTLPSink(t *testing.T) (*httptest.Server, <-chan *collogspb.ExportLogs
 func TestOTLPForwarderRequiresEndpoint(t *testing.T) {
 	if _, err := audit.NewOTLPForwarder(audit.OTLPConfig{}); err == nil {
 		t.Fatal("expected error for empty endpoint")
+	}
+}
+
+// The endpoint flag must honour a user-supplied path component
+// (OTLP/HTTP §3.2 — signal-specific endpoints are used as-is) so a
+// non-standard receiver path keeps working. Verified by spying on
+// the request URL via httptest.Server.URL + Request.URL.Path.
+func TestOTLPForwarderPreservesUserSuppliedPath(t *testing.T) {
+	cases := []struct {
+		name        string
+		endpointFmt string // %s = sink.URL
+		wantPath    string
+	}{
+		{"no path appends /v1/logs", "%s", "/v1/logs"},
+		{"trailing slash trimmed then appends", "%s/", "/v1/logs"},
+		{"explicit /v1/logs preserved", "%s/v1/logs", "/v1/logs"},
+		{"custom path preserved as-is", "%s/teams/sec/logs", "/teams/sec/logs"},
+		{"custom path trailing slash trimmed", "%s/teams/sec/logs/", "/teams/sec/logs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := make(chan string, 1)
+			sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got <- r.URL.Path
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(sink.Close)
+			ep := fmt.Sprintf(tc.endpointFmt, sink.URL)
+			fwd, err := audit.NewOTLPForwarder(audit.OTLPConfig{Endpoint: ep, Insecure: true})
+			if err != nil {
+				t.Fatalf("new (%s): %v", ep, err)
+			}
+			if err := fwd.Forward(context.Background(), []storage.AuditEvent{{Seq: 1, Ts: time.Now()}}); err != nil {
+				t.Fatalf("forward: %v", err)
+			}
+			if p := <-got; p != tc.wantPath {
+				t.Errorf("request path: got %q want %q", p, tc.wantPath)
+			}
+		})
 	}
 }
 

@@ -66,7 +66,18 @@ func NewOTLPForwarder(cfg OTLPConfig) (*OTLPForwarder, error) {
 		}
 		ep = scheme + "://" + ep
 	}
-	ep = strings.TrimRight(ep, "/") + "/v1/logs"
+	ep = strings.TrimRight(ep, "/")
+	// OTLP/HTTP §3.2: a signal-specific endpoint (which ours is - the
+	// flag is named --audit-otlp-endpoint, not --otlp-endpoint) should
+	// be used as-is when the user supplied a path component. Only
+	// auto-append /v1/logs when the endpoint is just scheme + host,
+	// so an operator behind a proxy with a non-standard path
+	// (e.g. https://collector.internal/teams/sec/v1/logs) can point
+	// straight at it.
+	hostAndPath := strings.TrimPrefix(strings.TrimPrefix(ep, "https://"), "http://")
+	if !strings.Contains(hostAndPath, "/") {
+		ep += "/v1/logs"
+	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 10 * time.Second
 	}
