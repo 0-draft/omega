@@ -71,6 +71,20 @@ changes (see [SECURITY.md](SECURITY.md)).
   shape as the single-evaluation endpoint. Closes the spec-required
   AuthZEN 1.0 §5.2 conformance gap (Search APIs are optional and
   remain on the roadmap).
+- OIDC IdP federation for the Human principal. `omega server` gains
+  a repeatable `--oidc-idp 'name=...,issuer=...,audience=...,
+  template=...'` flag and a new `POST /v1/oidc/exchange` endpoint:
+  a workload presents an ID token issued by a configured upstream
+  IdP (Keycloak / Okta / Entra ID / Google Workspace / Dex /
+  Authentik / ...), omega validates the token against the IdP's
+  JWKS (OIDC Discovery + signature + iss / aud / exp), renders a
+  SPIFFE ID from the IdP's template using `{idp}`, `{sub}`,
+  `{email}`, `{preferred_username}`, `{name}` placeholders, and
+  issues a fresh omega JWT-SVID with the upstream IdP recorded as
+  an RFC 8693 `act` claim. JWT-SVID TTL is capped at the upstream
+  token's remaining lifetime. Promotes the Human row in the
+  "Three subjects" table from `tracked` to `partial` (OIDC done,
+  SCIM still tracked).
 - OTLP/HTTP-protobuf audit forwarder. `omega server` gains
   `--audit-otlp-endpoint`, `--audit-otlp-insecure`, and a repeatable
   `--audit-otlp-header 'Key: value'` flag; each audit row is shipped
