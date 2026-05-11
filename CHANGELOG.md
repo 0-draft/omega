@@ -71,6 +71,15 @@ changes (see [SECURITY.md](SECURITY.md)).
   shape as the single-evaluation endpoint. Closes the spec-required
   AuthZEN 1.0 §5.2 conformance gap (Search APIs are optional and
   remain on the roadmap).
+- `GET /.well-known/authzen-configuration` — OpenID AuthZEN 1.0 §8
+  discovery document advertising the single-decision and batch
+  evaluation endpoints. The PDP base URL is `--issuer-url` when set
+  (canonical, validated `https`), otherwise it is derived from the
+  request's scheme and `Host` so a fresh install can answer
+  discovery probes with no extra flags. The three optional Search
+  API endpoints are intentionally omitted - per §8 their absence
+  signals "not implemented". Closes the last "deferred" row in
+  `docs/conformance-authzen.md` §8.
 - `examples/ca-vault-pki/` — runnable demo of the vault-pki
   backend. `mock-vault` Go binary stands up its own ECDSA Root CA
   and exposes the two endpoints omega calls; `run-demo.sh` boots

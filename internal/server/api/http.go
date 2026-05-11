@@ -128,6 +128,7 @@ func (s *Server) Handler() http.Handler {
 	handle("GET /v1/jwt/bundle", s.getJWTBundle)
 	handle("GET /v1/federation/bundles", s.getFederationBundles)
 	handle("GET /.well-known/openid-configuration", s.getOIDCDiscovery)
+	handle("GET /.well-known/authzen-configuration", s.getAuthzenDiscovery)
 	mux.Handle("GET /metrics", metrics.Handler())
 	return mux
 }
@@ -278,6 +279,45 @@ func (s *Server) getOIDCDiscovery(w http.ResponseWriter, _ *http.Request) {
 		ResponseTypesSupported:           []string{"id_token"},
 		SubjectTypesSupported:            []string{"public"},
 		IDTokenSigningAlgValuesSupported: []string{"ES256"},
+	})
+}
+
+// AuthzenDiscoveryResponse is the discovery document advertised at
+// /.well-known/authzen-configuration. The shape matches OpenID AuthZEN
+// 1.0 §8: `policy_decision_point` is the PDP base, and only the
+// endpoints Omega actually implements are advertised. The three Search
+// API endpoints (`subject_search_endpoint`, `resource_search_endpoint`,
+// `action_search_endpoint`) are deliberately omitted - per §8 an
+// absent field signals the endpoint is not implemented, which is the
+// honest answer until Omega ships them.
+type AuthzenDiscoveryResponse struct {
+	PolicyDecisionPoint       string `json:"policy_decision_point"`
+	AccessEvaluationEndpoint  string `json:"access_evaluation_endpoint"`
+	AccessEvaluationsEndpoint string `json:"access_evaluations_endpoint"`
+}
+
+func (s *Server) getAuthzenDiscovery(w http.ResponseWriter, r *http.Request) {
+	// Prefer the operator-configured issuer URL: it is the canonical
+	// public base, already validated to be https + no query/fragment.
+	// Falling back to the request host lets a freshly-installed server
+	// answer discovery probes without forcing operators to set
+	// --issuer-url just for AuthZEN.
+	base := s.ca.IssuerURL()
+	if base == "" {
+		if r.Host == "" {
+			writeErr(w, http.StatusInternalServerError, errors.New("cannot derive PDP base URL: request has no Host header and --issuer-url is not set"))
+			return
+		}
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		base = scheme + "://" + r.Host
+	}
+	writeJSON(w, http.StatusOK, AuthzenDiscoveryResponse{
+		PolicyDecisionPoint:       base,
+		AccessEvaluationEndpoint:  base + "/access/v1/evaluation",
+		AccessEvaluationsEndpoint: base + "/access/v1/evaluations",
 	})
 }
 
