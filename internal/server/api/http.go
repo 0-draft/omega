@@ -296,23 +296,18 @@ type AuthzenDiscoveryResponse struct {
 	AccessEvaluationsEndpoint string `json:"access_evaluations_endpoint"`
 }
 
-func (s *Server) getAuthzenDiscovery(w http.ResponseWriter, r *http.Request) {
-	// Prefer the operator-configured issuer URL: it is the canonical
-	// public base, already validated to be https + no query/fragment.
-	// Falling back to the request host lets a freshly-installed server
-	// answer discovery probes without forcing operators to set
-	// --issuer-url just for AuthZEN.
+func (s *Server) getAuthzenDiscovery(w http.ResponseWriter, _ *http.Request) {
+	// The PDP base URL must be the operator-configured issuer URL:
+	// `--issuer-url` is validated to be https + no query/fragment at
+	// startup, and using a single, canonical source prevents a PEP
+	// from being pointed at an attacker-controlled URL through a
+	// spoofed Host header. Mirrors getOIDCDiscovery: when the
+	// authority was constructed without an issuer, discovery is
+	// disabled and returns 404.
 	base := s.ca.IssuerURL()
 	if base == "" {
-		if r.Host == "" {
-			writeErr(w, http.StatusInternalServerError, errors.New("cannot derive PDP base URL: request has no Host header and --issuer-url is not set"))
-			return
-		}
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		base = scheme + "://" + r.Host
+		writeErr(w, http.StatusNotFound, errors.New("AuthZEN discovery is disabled (start omega server with --issuer-url)"))
+		return
 	}
 	writeJSON(w, http.StatusOK, AuthzenDiscoveryResponse{
 		PolicyDecisionPoint:       base,

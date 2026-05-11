@@ -895,30 +895,14 @@ func TestAuthzenDiscoveryUsesIssuerURLWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestAuthzenDiscoveryDerivesBaseFromRequestWhenIssuerMissing(t *testing.T) {
+func TestAuthzenDiscoveryReturns404WhenIssuerNotConfigured(t *testing.T) {
 	srv := newTestServer(t)
 	resp, err := http.Get(srv.URL + "/.well-known/authzen-configuration")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status: got %d want 200", resp.StatusCode)
-	}
-	var doc api.AuthzenDiscoveryResponse
-	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	// httptest.NewServer is plain HTTP, so the derived base must use http://
-	// and the listener's host:port.
-	wantBase := srv.URL
-	if doc.PolicyDecisionPoint != wantBase {
-		t.Errorf("pdp: got %q want %q", doc.PolicyDecisionPoint, wantBase)
-	}
-	if doc.AccessEvaluationEndpoint != wantBase+"/access/v1/evaluation" {
-		t.Errorf("evaluation: got %q want %q", doc.AccessEvaluationEndpoint, wantBase+"/access/v1/evaluation")
-	}
-	if doc.AccessEvaluationsEndpoint != wantBase+"/access/v1/evaluations" {
-		t.Errorf("evaluations: got %q want %q", doc.AccessEvaluationsEndpoint, wantBase+"/access/v1/evaluations")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404", resp.StatusCode)
 	}
 }
