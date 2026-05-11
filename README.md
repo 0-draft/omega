@@ -121,6 +121,8 @@ Workload API gRPC (SPIFFE) is served by `omega agent` over a Unix socket and spe
 
 ## Standards alignment
 
+Section-by-section audits live at [docs/conformance-spiffe.md](docs/conformance-spiffe.md) (SPIFFE Workload API + X.509-SVID + JWT-SVID + Bundle Format + Federation) and [docs/conformance-authzen.md](docs/conformance-authzen.md) (AuthZEN 1.0 Final Specification).
+
 | Layer                 | Standard                                                       | Status      |
 | --------------------- | -------------------------------------------------------------- | ----------- |
 | Workload identity     | SPIFFE / SPIRE compatible (X.509-SVID, JWT-SVID, Workload API) | implemented |
