@@ -89,8 +89,10 @@ func newServerCommand() *cobra.Command {
 		caBackend               string
 		caVaultPKIAddr          string
 		caVaultPKIToken         string
+		caVaultPKITokenFile     string
 		caVaultPKIMount         string
 		caVaultPKIRole          string
+		caVaultPKICACertFile    string
 	)
 
 	cmd := &cobra.Command{
@@ -117,10 +119,15 @@ func newServerCommand() *cobra.Command {
 				Dir:         filepath.Join(dataDir, "ca"),
 			}
 			if caCfg.Kind == identity.KindVaultPKI {
+				token, err := resolveVaultToken(caVaultPKIToken, caVaultPKITokenFile)
+				if err != nil {
+					return fmt.Errorf("ca-vault-pki-token: %w", err)
+				}
 				caCfg.VaultPKIAddr = strings.TrimSpace(caVaultPKIAddr)
-				caCfg.VaultPKIToken = strings.TrimSpace(caVaultPKIToken)
+				caCfg.VaultPKIToken = token
 				caCfg.VaultPKIMount = strings.TrimSpace(caVaultPKIMount)
 				caCfg.VaultPKIRole = strings.TrimSpace(caVaultPKIRole)
+				caCfg.VaultPKICACertFile = strings.TrimSpace(caVaultPKICACertFile)
 			}
 			ca, err := identity.New(caCfg)
 			if err != nil {
@@ -302,7 +309,11 @@ func newServerCommand() *cobra.Command {
 	cmd.Flags().StringVar(&caVaultPKIAddr, "ca-vault-pki-addr", "",
 		"Vault address, e.g. https://vault.example:8200. Required when --ca-backend=vault-pki.")
 	cmd.Flags().StringVar(&caVaultPKIToken, "ca-vault-pki-token", "",
-		"Vault token sent as X-Vault-Token. Required when --ca-backend=vault-pki. Prefer scoped tokens with the minimal pki/sign/<role> capability.")
+		"Vault token sent as X-Vault-Token. Visible to other users via `ps`; production deployments should prefer --ca-vault-pki-token-file or the OMEGA_VAULT_PKI_TOKEN env var. Required when --ca-backend=vault-pki unless one of those is set.")
+	cmd.Flags().StringVar(&caVaultPKITokenFile, "ca-vault-pki-token-file", "",
+		"path to a file whose first line is the Vault token. Preferred over the literal --ca-vault-pki-token flag because the secret never touches argv.")
+	cmd.Flags().StringVar(&caVaultPKICACertFile, "ca-vault-pki-ca-cert", "",
+		"path to a PEM file with the Vault server's TLS trust anchor(s). Empty falls back to the system trust store; production Vault is almost always behind a private CA and must set this.")
 	cmd.Flags().StringVar(&caVaultPKIMount, "ca-vault-pki-mount", "pki",
 		"Vault PKI engine mount path. Default 'pki' matches the canonical mount name.")
 	cmd.Flags().StringVar(&caVaultPKIRole, "ca-vault-pki-role", "",
@@ -340,6 +351,32 @@ func newServerCommand() *cobra.Command {
 // whether to start leader election without exporting it from storage.
 func isPostgresDSN(spec string) bool {
 	return strings.HasPrefix(spec, "postgres://") || strings.HasPrefix(spec, "postgresql://")
+}
+
+// resolveVaultToken assembles the Vault token from (in order of
+// preference) the file path, the env var, and the literal flag.
+// Returns "" when none are set so the caller surfaces a clear
+// "token required" error instead of an opaque 403 from Vault.
+func resolveVaultToken(literal, tokenFile string) (string, error) {
+	if tokenFile != "" {
+		raw, err := os.ReadFile(tokenFile)
+		if err != nil {
+			return "", fmt.Errorf("read token file %s: %w", tokenFile, err)
+		}
+		// First non-empty line is the token; allow a trailing newline.
+		tok := strings.TrimSpace(string(raw))
+		if line, _, ok := strings.Cut(tok, "\n"); ok {
+			tok = strings.TrimSpace(line)
+		}
+		if tok == "" {
+			return "", fmt.Errorf("token file %s is empty", tokenFile)
+		}
+		return tok, nil
+	}
+	if env := strings.TrimSpace(os.Getenv("OMEGA_VAULT_PKI_TOKEN")); env != "" {
+		return env, nil
+	}
+	return strings.TrimSpace(literal), nil
 }
 
 // parseOIDCIdPFlags parses repeated --oidc-idp values. Each value is

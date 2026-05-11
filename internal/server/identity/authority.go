@@ -80,6 +80,12 @@ type Config struct {
 	VaultPKIMount     string // mount path, default "pki"
 	VaultPKIRole      string // role under the mount used to sign CSRs
 	VaultPKIBundleTTL time.Duration
+	// VaultPKICACertFile is an optional path to a PEM file with one
+	// or more trust anchors used to verify Vault's TLS certificate.
+	// Empty falls back to the system trust store. Vault deployments
+	// signed by a private CA must set this; production deployments
+	// almost always do.
+	VaultPKICACertFile string
 }
 
 // Authority is the signing + bundle interface every Omega CA backend
