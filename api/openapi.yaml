@@ -49,6 +49,8 @@ tags:
     description: OpenID AuthZEN 1.0 PDP evaluation.
   - name: token-exchange
     description: RFC 8693 token exchange with nested `act` claims.
+  - name: oidc-federation
+    description: External OIDC IdP federation for Human principals.
   - name: audit
     description: Tamper-evident audit log readout and verification.
   - name: oidc
@@ -397,6 +399,60 @@ paths:
         "503":
           $ref: "#/components/responses/NotLeader"
 
+  /v1/oidc/exchange:
+    post:
+      tags: [oidc-federation, leader-only]
+      operationId: exchangeOIDC
+      summary: Exchange an external OIDC IdP ID token for an omega JWT-SVID.
+      description: |
+        The Human principal flow. Requires `omega server` to be
+        started with one or more `--oidc-idp` flags declaring the
+        upstream IdPs (Keycloak, Okta, Entra ID, Google Workspace,
+        Dex, Authentik). The workload posts an ID token signed by
+        the named IdP plus the audience the workload wants on the
+        returned JWT-SVID; omega:
+
+        1. validates the ID token against the IdP's JWKS (fetched
+           via OIDC Discovery), checks issuer / audience / expiry;
+        2. renders the IdP's configured SPIFFE template against the
+           validated claims (`{idp}`, `{sub}`, `{email}`,
+           `{preferred_username}`, `{name}`);
+        3. requires the rendered SPIFFE ID to lie in `--trust-domain`;
+        4. issues a fresh omega JWT-SVID under that SPIFFE ID, with
+           the upstream IdP recorded as an RFC 8693 `act` claim;
+        5. records the exchange in the tamper-evident audit log.
+
+        Returns `404 Not Found` when no IdP is configured.
+        `400 Bad Request` for unknown `idp`, missing fields, or a
+        template that renders outside the trust domain.
+        `401 Unauthorized` when the ID token fails validation (the
+        audit log records one deny row).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OIDCExchangeRequest"
+      responses:
+        "200":
+          description: omega JWT-SVID for the Human principal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OIDCExchangeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Upstream ID token rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotLeader"
+
   /v1/token/exchange:
     post:
       tags: [token-exchange, leader-only]
@@ -570,6 +626,57 @@ components:
         expires_at:
           type: string
           format: date-time
+
+    OIDCExchangeRequest:
+      type: object
+      additionalProperties: false
+      required: [idp, id_token, audience]
+      properties:
+        idp:
+          type: string
+          description: |
+            Name of the IdP registered at startup via
+            `--oidc-idp 'name=...,issuer=...,audience=...,template=...'`.
+        id_token:
+          type: string
+          description: ID token (JWS) issued by the upstream IdP.
+        audience:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: Audience claim values for the issued omega JWT-SVID.
+        ttl_seconds:
+          type: integer
+          minimum: 0
+          description: Requested lifetime. Capped at the upstream ID token's remaining lifetime.
+
+    OIDCExchangeResponse:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type, spiffe_id, audience, expires_in, kid, idp]
+      properties:
+        access_token:
+          type: string
+          description: omega JWT-SVID compact JWS.
+        token_type:
+          type: string
+          const: Bearer
+        spiffe_id:
+          type: string
+          description: Rendered SPIFFE ID under which the JWT-SVID was issued.
+        audience:
+          type: array
+          items:
+            type: string
+        expires_in:
+          type: integer
+          minimum: 0
+        kid:
+          type: string
+        idp:
+          type: string
+          description: Name of the IdP that authenticated the upstream token.
 
     K8sAttestRequest:
       type: object

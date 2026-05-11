@@ -34,12 +34,11 @@ release as features are ready rather than on a fixed cadence; see
 
 ## Later (6-12 months)
 
-- OIDC IdP federation hub: bring-your-own Keycloak / Okta / Entra ID
-  / Google Workspace, map claims into the same RBAC + ABAC + ReBAC
-  surface that workloads and agents use. Promotes the Human row in
-  the README's "Three subjects" table from `tracked` to
-  `implemented`.
-- SCIM 2.0 provisioning endpoint for the Human subject.
+- SCIM 2.0 provisioning endpoint for the Human subject (the OIDC
+  side - `POST /v1/oidc/exchange` accepting Keycloak / Okta / Entra
+  ID / Google Workspace ID tokens against per-IdP audience and
+  template - has shipped; provisioning the user catalog ahead of
+  first login is the remaining piece).
 - HSM / KMS-backed CA upstream plugin (Vault PKI, step-ca,
   AWS Private CA, GCP CAS, Azure Key Vault).
 

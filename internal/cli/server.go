@@ -25,6 +25,7 @@ import (
 	"github.com/0-draft/omega/internal/server/federation"
 	"github.com/0-draft/omega/internal/server/identity"
 	"github.com/0-draft/omega/internal/server/metrics"
+	oidcpkg "github.com/0-draft/omega/internal/server/oidc"
 	"github.com/0-draft/omega/internal/server/policy"
 	"github.com/0-draft/omega/internal/server/storage"
 	"github.com/0-draft/omega/internal/server/tracing"
@@ -84,6 +85,7 @@ func newServerCommand() *cobra.Command {
 		auditOTLPEndpoint       string
 		auditOTLPInsecure       bool
 		auditOTLPHeaders        []string
+		oidcIdPs                []string
 	)
 
 	cmd := &cobra.Command{
@@ -203,6 +205,20 @@ func newServerCommand() *cobra.Command {
 				WithFederation(fed).
 				WithEnforceTokenExchangePolicy(enforceTokenExchangePol)
 
+			if len(oidcIdPs) > 0 {
+				cfgs, err := parseOIDCIdPFlags(oidcIdPs)
+				if err != nil {
+					return fmt.Errorf("oidc-idp: %w", err)
+				}
+				reg, err := oidcpkg.NewRegistry(cfgs)
+				if err != nil {
+					return fmt.Errorf("oidc-idp: %w", err)
+				}
+				apiServer = apiServer.WithOIDCRegistry(reg)
+				names := reg.Names()
+				fmt.Fprintf(os.Stderr, "omega server: oidc idps configured (%d): %s\n", len(names), strings.Join(names, ", "))
+			}
+
 			if k8sAttestEnable {
 				k8sClient, err := buildK8sClient(k8sKubeconfig)
 				if err != nil {
@@ -269,6 +285,9 @@ func newServerCommand() *cobra.Command {
 			"0 (default) uses Omega's reserved key; override if you run multiple Omega clusters on one Postgres.")
 	cmd.Flags().DurationVar(&haPollEvery, "ha-poll-interval", time.Second,
 		"how often a follower retries to acquire the advisory lock.")
+	cmd.Flags().StringArrayVar(&oidcIdPs, "oidc-idp", nil,
+		"register an upstream OIDC IdP (repeatable). Format: 'name=corp,issuer=https://keycloak/realms/x,audience=omega-clients,template=spiffe://<td>/humans/{idp}/{preferred_username}'. The audience= key takes one or more values separated by ';'. Workloads call POST /v1/oidc/exchange with {idp, id_token, audience} to swap an external ID token for an omega JWT-SVID under the rendered SPIFFE ID.")
+
 	cmd.Flags().BoolVar(&k8sAttestEnable, "k8s-attest", false,
 		"enable the POST /v1/attest/k8s endpoint: workloads present a ServiceAccount projected token + CSR, omega validates the token via TokenReview, and issues an X.509-SVID derived from the (namespace, serviceaccount[, podname]) triple.")
 	cmd.Flags().StringVar(&k8sSVIDTemplate, "k8s-svid-template",
@@ -298,6 +317,44 @@ func newServerCommand() *cobra.Command {
 // whether to start leader election without exporting it from storage.
 func isPostgresDSN(spec string) bool {
 	return strings.HasPrefix(spec, "postgres://") || strings.HasPrefix(spec, "postgresql://")
+}
+
+// parseOIDCIdPFlags parses repeated --oidc-idp values. Each value is
+// a comma-separated `key=value` list with keys `name`, `issuer`,
+// `audience` (repeatable inside the same value via `audience=a;b`),
+// and `template`. Missing required keys are a hard error so a
+// misconfiguration surfaces at startup instead of failing the first
+// /v1/oidc/exchange call.
+func parseOIDCIdPFlags(specs []string) ([]oidcpkg.IdPConfig, error) {
+	out := make([]oidcpkg.IdPConfig, 0, len(specs))
+	for _, s := range specs {
+		var cfg oidcpkg.IdPConfig
+		for _, kv := range strings.Split(s, ",") {
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok {
+				return nil, fmt.Errorf("invalid entry %q (expected key=value pairs)", s)
+			}
+			switch strings.TrimSpace(k) {
+			case "name":
+				cfg.Name = strings.TrimSpace(v)
+			case "issuer":
+				cfg.Issuer = strings.TrimSpace(v)
+			case "audience":
+				for _, a := range strings.Split(v, ";") {
+					a = strings.TrimSpace(a)
+					if a != "" {
+						cfg.Audiences = append(cfg.Audiences, a)
+					}
+				}
+			case "template":
+				cfg.SPIFFEIDTemplate = strings.TrimSpace(v)
+			default:
+				return nil, fmt.Errorf("unknown key %q in %q (expected name= issuer= audience= template=)", k, s)
+			}
+		}
+		out = append(out, cfg)
+	}
+	return out, nil
 }
 
 // parseHeaderFlags turns repeated "Key: value" flag values into a

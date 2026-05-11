@@ -27,6 +27,7 @@ import (
 	"github.com/0-draft/omega/internal/server/federation"
 	"github.com/0-draft/omega/internal/server/identity"
 	"github.com/0-draft/omega/internal/server/metrics"
+	"github.com/0-draft/omega/internal/server/oidc"
 	"github.com/0-draft/omega/internal/server/policy"
 	"github.com/0-draft/omega/internal/server/storage"
 	"github.com/0-draft/omega/internal/server/tracing"
@@ -42,6 +43,7 @@ type Server struct {
 	enforceExchangePolicy bool
 	k8sAttestor           *attest.K8sAttestor
 	k8sSVIDTemplate       string
+	oidc                  *oidc.Registry
 }
 
 func NewServer(store *storage.Store, ca identity.Authority, pdp *policy.Engine) *Server {
@@ -122,6 +124,7 @@ func (s *Server) Handler() http.Handler {
 	handle("GET /v1/audit/verify", s.verifyAudit)
 	handle("POST /v1/svid/jwt", leaderOnly(s.issueJWTSVID))
 	handle("POST /v1/token/exchange", leaderOnly(s.tokenExchange))
+	handle("POST /v1/oidc/exchange", leaderOnly(s.exchangeOIDC))
 	handle("GET /v1/jwt/bundle", s.getJWTBundle)
 	handle("GET /v1/federation/bundles", s.getFederationBundles)
 	handle("GET /.well-known/openid-configuration", s.getOIDCDiscovery)

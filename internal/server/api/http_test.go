@@ -569,6 +569,7 @@ func TestHTTPLeaderGate(t *testing.T) {
 		{"POST", "/access/v1/evaluations", `{"subject":{"type":"Spiffe","id":"spiffe://omega.local/x"},"action":{"name":"GET"},"evaluations":[{"resource":{"type":"HttpPath","id":"/a"}}]}`},
 		{"POST", "/v1/svid/jwt", `{"spiffe_id":"spiffe://omega.local/x","audience":["a"]}`},
 		{"POST", "/v1/attest/k8s", `{"token":"x","csr":""}`},
+		{"POST", "/v1/oidc/exchange", `{"idp":"x","id_token":"y","audience":["z"]}`},
 	}
 	for _, tc := range cases {
 		req, _ := http.NewRequest(tc.method, srv.URL+tc.path, strings.NewReader(tc.body))

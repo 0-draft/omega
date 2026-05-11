@@ -41,7 +41,7 @@ today:
 | -------- | ---------------------- | ------------------------ | --------------------------------- | ----------- |
 | Service  | X.509-SVID, JWT-SVID   | RBAC + ABAC + ReBAC      | mTLS, AuthZEN PDP                 | implemented |
 | AI Agent | JWT-SVID + MCP / A2A   | Delegation chain, scoped | RFC 8693 token exchange + AuthZEN | example     |
-| Human    | OIDC, SCIM-provisioned | RBAC + ABAC + ReBAC      | OIDC, AuthZEN PDP                 | tracked     |
+| Human    | OIDC (SCIM-provisioned: tracked) | RBAC + ABAC + ReBAC | OIDC, AuthZEN PDP        | partial: OIDC IdP federation implemented; SCIM tracked |
 
 Every authorization decision lands in a tamper-evident log, regardless of
 subject type.
@@ -110,6 +110,7 @@ Components are independently runnable (`omega server identity`, `omega server po
 | POST   | `/v1/svid`                        | Issue an X.509-SVID from a CSR (`{spiffe_id, csr}`)                    |
 | POST   | `/v1/attest/k8s`                  | Attest a Kubernetes ServiceAccount projected token + CSR → X.509-SVID  |
 | GET    | `/v1/bundle`                      | Trust bundle PEM (CA cert)                                             |
+| POST   | `/v1/oidc/exchange`               | Swap an external OIDC IdP ID token for an omega JWT-SVID (Human flow)  |
 | POST   | `/access/v1/evaluation`           | OpenID AuthZEN 1.0 PDP evaluation (single decision)                    |
 | POST   | `/access/v1/evaluations`          | OpenID AuthZEN 1.0 PDP evaluation (batch, with top-level defaults)     |
 | GET    | `/.well-known/openid-configuration` | OIDC discovery (when `--issuer-url` is set; for AWS IAM, GCP WIF, K8s) |
@@ -130,7 +131,7 @@ Workload API gRPC (SPIFFE) is served by `omega agent` over a Unix socket and spe
 | Token exchange        | RFC 8693 (nested `act`)                                        | example     |
 | AI agent identity     | MCP (Anthropic), A2A (Google)                                  | example     |
 | Multi-domain identity | IETF WIMSE                                                     | tracked     |
-| OIDC IdP federation   | OIDC, OAuth 2.1                                                | tracked     |
+| OIDC IdP federation   | OIDC ID-token-in, omega JWT-SVID-out (`POST /v1/oidc/exchange`)| implemented |
 | Provisioning          | SCIM 2.0                                                       | tracked     |
 | Cryptography          | NIST FIPS 203 / 204 / 205 (ML-KEM / ML-DSA / SLH-DSA)          | tracked     |
 
