@@ -71,6 +71,15 @@ changes (see [SECURITY.md](SECURITY.md)).
   shape as the single-evaluation endpoint. Closes the spec-required
   AuthZEN 1.0 §5.2 conformance gap (Search APIs are optional and
   remain on the roadmap).
+- [`docs/conformance-spiffe.md`](docs/conformance-spiffe.md) and
+  [`docs/conformance-authzen.md`](docs/conformance-authzen.md) -
+  section-by-section conformance matrices against the SPIFFE
+  specifications (Workload API, X.509-SVID, JWT-SVID, Trust
+  Bundle Format, Federation) and the AuthZEN 1.0 Final
+  Specification. Status per spec section: implemented / partial /
+  deferred / not applicable, with omega's source pointer and the
+  deliberate non-implementations (CRL/OCSP, AuthZEN Search APIs,
+  Workload-API `ValidateJWTSVID` RPC) called out at the end.
 - [`docs/adr/0005-ca-plugin-architecture.md`](docs/adr/0005-ca-plugin-architecture.md)
   records the `identity.Authority` interface as the Plugin-layer
   seam for CA backends (HSM / KMS / external CAs). Codifies what
