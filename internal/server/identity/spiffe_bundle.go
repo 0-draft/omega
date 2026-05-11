@@ -16,12 +16,12 @@ package identity
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"math/big"
 	"time"
@@ -134,15 +134,19 @@ func certToJWK(cert *x509.Certificate, der []byte) (map[string]any, error) {
 }
 
 func ecCurveName(pub *ecdsa.PublicKey) (string, error) {
-	switch pub.Curve.Params().Name {
-	case "P-256":
+	// Compare curve interfaces directly: the elliptic.P256/P384/P521
+	// helpers return process-wide singletons, so identity comparison
+	// is both faster and harder to spoof than checking the
+	// human-readable Params().Name string.
+	switch pub.Curve {
+	case elliptic.P256():
 		return "P-256", nil
-	case "P-384":
+	case elliptic.P384():
 		return "P-384", nil
-	case "P-521":
+	case elliptic.P521():
 		return "P-521", nil
 	default:
-		return "", errors.New("unsupported EC curve " + pub.Curve.Params().Name)
+		return "", fmt.Errorf("unsupported EC curve %s", pub.Curve.Params().Name)
 	}
 }
 
