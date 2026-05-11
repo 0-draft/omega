@@ -32,6 +32,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# wait_for_url polls $1 until curl returns 2xx or 5 seconds elapse.
+# Exits the script with a clear message + a tail of $2 (a log file)
+# when the deadline is hit, so a slow startup fails at the actual
+# point of failure instead of cascading into a confusing later step.
+wait_for_url() {
+	local url="$1" log="$2"
+	for _ in $(seq 1 50); do
+		if curl -fsS "$url" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	echo "[demo] FAIL: $url did not become ready within 5s"
+	[[ -f "$log" ]] && { echo "[demo] log tail ($log):"; tail -20 "$log" | sed 's/^/       /'; }
+	exit 1
+}
+
 rm -rf "$DEMO_DIR"
 mkdir -p "$DEMO_DIR"
 
@@ -44,13 +61,7 @@ echo "[demo] starting mock IdP on http://127.0.0.1:$IDP_PORT"
 "$DEMO_DIR/mock-idp" --addr "127.0.0.1:$IDP_PORT" >"$DEMO_DIR/mock-idp.log" 2>&1 &
 echo $! >"$DEMO_DIR/mock-idp.pid"
 
-# Wait for discovery to serve.
-for _ in $(seq 1 30); do
-	if curl -fsS "http://127.0.0.1:$IDP_PORT/.well-known/openid-configuration" >/dev/null 2>&1; then
-		break
-	fi
-	sleep 0.1
-done
+wait_for_url "http://127.0.0.1:$IDP_PORT/.well-known/openid-configuration" "$DEMO_DIR/mock-idp.log"
 
 ISSUER="http://127.0.0.1:$IDP_PORT"
 TEMPLATE="spiffe://$TRUST_DOMAIN/humans/{idp}/{preferred_username}"
@@ -64,13 +75,7 @@ omega server \
 	>"$DEMO_DIR/server.log" 2>&1 &
 echo $! >"$DEMO_DIR/server.pid"
 
-# Wait for omega health.
-for _ in $(seq 1 50); do
-	if curl -fsS "http://127.0.0.1:$SERVER_PORT/healthz" >/dev/null 2>&1; then
-		break
-	fi
-	sleep 0.1
-done
+wait_for_url "http://127.0.0.1:$SERVER_PORT/healthz" "$DEMO_DIR/server.log"
 
 echo "[demo] asking the mock IdP to sign an ID token for alice"
 ID_TOKEN_JSON=$(curl -fsS -X POST "http://127.0.0.1:$IDP_PORT/sign" \
@@ -123,16 +128,17 @@ claims=json.loads(base64.urlsafe_b64decode(seg))
 print(json.dumps(claims.get("act",{}),sort_keys=True))')
 
 EXPECTED_ACT='{"idp": "'"$IDP_NAME"'", "iss": "'"$ISSUER"'", "kind": "oidc-idp", "sub": "alice@example.com"}'
-# Normalise both for stable comparison.
-ACT_NORM=$(echo "$ACT"           | python3 -c 'import sys,json; print(json.dumps(json.loads(sys.stdin.read()), sort_keys=True))')
-WANT_NORM=$(echo "$EXPECTED_ACT" | python3 -c 'import sys,json; print(json.dumps(json.loads(sys.stdin.read()), sort_keys=True))')
-if [[ "$ACT_NORM" != "$WANT_NORM" ]]; then
+# `$ACT` already came back sort_keys=True from the extraction step,
+# so only the expected value needs normalising for comparison.
+WANT_NORM=$(JSON="$EXPECTED_ACT" python3 -c 'import os,json
+print(json.dumps(json.loads(os.environ["JSON"]),sort_keys=True))')
+if [[ "$ACT" != "$WANT_NORM" ]]; then
 	echo "[demo] FAIL: act claim mismatch"
-	echo "       got:  $ACT_NORM"
+	echo "       got:  $ACT"
 	echo "       want: $WANT_NORM"
 	exit 1
 fi
 
 echo "[demo] success"
 echo "[demo]   rendered spiffe_id: $SPIFFE_ID"
-echo "[demo]   act claim:          $ACT_NORM"
+echo "[demo]   act claim:          $ACT"
