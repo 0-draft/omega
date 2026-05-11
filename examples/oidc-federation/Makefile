@@ -12,7 +12,7 @@ demo:
 	@bash $(CURDIR)/run-demo.sh
 
 down:
-	@pkill -f 'omega server --http-addr 127.0.0.1:18180' 2>/dev/null || true
-	@pkill -f '$(DEMO_DIR)/mock-idp' 2>/dev/null || true
+	@-[ -f $(DEMO_DIR)/server.pid   ] && kill $$(cat $(DEMO_DIR)/server.pid)   2>/dev/null || true
+	@-[ -f $(DEMO_DIR)/mock-idp.pid ] && kill $$(cat $(DEMO_DIR)/mock-idp.pid) 2>/dev/null || true
 	@rm -rf $(DEMO_DIR)
 	@echo "[demo] torn down"
