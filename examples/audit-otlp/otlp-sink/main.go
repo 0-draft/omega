@@ -14,7 +14,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -29,6 +28,21 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	"google.golang.org/protobuf/proto"
 )
+
+// emptySuccessResponse is the pre-marshaled all-zero
+// ExportLogsServiceResponse - a valid "no partial failures" reply
+// per OTLP/HTTP §3.2. Computed once at init time so every export
+// reuses the same byte slice.
+var emptySuccessResponse = func() []byte {
+	b, err := proto.Marshal(&collogspb.ExportLogsServiceResponse{})
+	if err != nil {
+		// proto.Marshal of an empty message can't fail; treat the
+		// hypothetical as a fatal because shipping a wrong reply
+		// would silently corrupt every consumer.
+		panic(fmt.Sprintf("pre-marshal empty OTLP response: %v", err))
+	}
+	return b
+}()
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:14318", "listen address")
@@ -85,7 +99,7 @@ func main() {
 		// partial-success envelope - no rejected records to report.
 		w.Header().Set("Content-Type", "application/x-protobuf")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(emptySuccessResponse())
+		_, _ = w.Write(emptySuccessResponse)
 	})
 
 	srv := &http.Server{
@@ -124,15 +138,3 @@ func anyValue(v *commonpb.AnyValue) any {
 	return fmt.Sprintf("%v", v)
 }
 
-// emptySuccessResponse pre-marshals the all-zero
-// ExportLogsServiceResponse so we do not allocate one per request.
-func emptySuccessResponse() []byte {
-	b, _ := proto.Marshal(&collogspb.ExportLogsServiceResponse{})
-	if len(b) == 0 {
-		// Some OTLP receivers send a single 0x00 byte; an empty body
-		// is also valid. Use an empty slice but make sure the
-		// caller still got Content-Type set.
-		return bytes.NewBuffer(nil).Bytes()
-	}
-	return b
-}
