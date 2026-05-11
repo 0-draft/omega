@@ -73,12 +73,14 @@ changes (see [SECURITY.md](SECURITY.md)).
   remain on the roadmap).
 - `GET /.well-known/authzen-configuration` — OpenID AuthZEN 1.0 §8
   discovery document advertising the single-decision and batch
-  evaluation endpoints. The PDP base URL is `--issuer-url` when set
-  (canonical, validated `https`), otherwise it is derived from the
-  request's scheme and `Host` so a fresh install can answer
-  discovery probes with no extra flags. The three optional Search
-  API endpoints are intentionally omitted - per §8 their absence
-  signals "not implemented". Closes the last "deferred" row in
+  evaluation endpoints. The PDP base URL is `--issuer-url`
+  (canonical, validated `https`, no query/fragment) so a PEP
+  consuming the document cannot be redirected to an
+  attacker-controlled URL through a spoofed `Host` header. Returns
+  `404` when `--issuer-url` is not set, mirroring the OIDC
+  discovery handler. The three optional Search API endpoints are
+  intentionally omitted - per §8 their absence signals "not
+  implemented". Closes the last "deferred" row in
   `docs/conformance-authzen.md` §8.
 - `examples/ca-vault-pki/` — runnable demo of the vault-pki
   backend. `mock-vault` Go binary stands up its own ECDSA Root CA

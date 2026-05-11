@@ -316,14 +316,15 @@ paths:
       summary: AuthZEN 1.0 discovery document.
       description: |
         Returns the [OpenID AuthZEN 1.0 §8](https://openid.net/specs/authorization-api-1_0.html)
-        discovery document. The PDP base URL is the value of
-        `--issuer-url` when configured (canonical, validated `https`),
-        otherwise it is derived from the incoming request's scheme and
-        `Host` header so a freshly-installed server can answer
-        discovery probes without extra flags. Only the endpoints Omega
-        implements are advertised - the three optional Search APIs are
-        omitted on purpose (per §8 their absence signals "not
-        implemented").
+        discovery document. The PDP base URL is `--issuer-url` -
+        canonical, validated `https`, no query/fragment - so a PEP
+        consuming this document cannot be redirected to an
+        attacker-controlled URL through a spoofed `Host` header.
+        Returns `404 Not Found` when `omega server` was started
+        without `--issuer-url`, matching the OIDC discovery handler.
+        Only the endpoints Omega implements are advertised - the
+        three optional Search APIs are omitted on purpose (per §8
+        their absence signals "not implemented").
       responses:
         "200":
           description: AuthZEN discovery document.
@@ -331,6 +332,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuthzenDiscoveryResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /v1/jwt/bundle:
     get:
