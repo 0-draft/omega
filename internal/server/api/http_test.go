@@ -848,3 +848,77 @@ func TestOIDCDiscoveryReturnsDocumentWhenIssuerConfigured(t *testing.T) {
 		t.Errorf("alg: got %q want ES256", got)
 	}
 }
+
+func TestAuthzenDiscoveryUsesIssuerURLWhenConfigured(t *testing.T) {
+	const wantIss = "https://omega.example.com"
+	dir := t.TempDir()
+	store, err := storage.Open(filepath.Join(dir, "omega.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ca, err := identity.New(identity.Config{
+		Kind:        identity.KindDisk,
+		TrustDomain: "omega.local",
+		Issuer:      wantIss,
+		Dir:         filepath.Join(dir, "ca"),
+	})
+	if err != nil {
+		t.Fatalf("ca: %v", err)
+	}
+	srv := httptest.NewServer(api.NewServer(store, ca, policy.New()).Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/.well-known/authzen-configuration")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("content-type: got %q want application/json", got)
+	}
+	var doc api.AuthzenDiscoveryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if doc.PolicyDecisionPoint != wantIss {
+		t.Errorf("pdp: got %q want %q", doc.PolicyDecisionPoint, wantIss)
+	}
+	if doc.AccessEvaluationEndpoint != wantIss+"/access/v1/evaluation" {
+		t.Errorf("evaluation: got %q", doc.AccessEvaluationEndpoint)
+	}
+	if doc.AccessEvaluationsEndpoint != wantIss+"/access/v1/evaluations" {
+		t.Errorf("evaluations: got %q", doc.AccessEvaluationsEndpoint)
+	}
+}
+
+func TestAuthzenDiscoveryDerivesBaseFromRequestWhenIssuerMissing(t *testing.T) {
+	srv := newTestServer(t)
+	resp, err := http.Get(srv.URL + "/.well-known/authzen-configuration")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	var doc api.AuthzenDiscoveryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// httptest.NewServer is plain HTTP, so the derived base must use http://
+	// and the listener's host:port.
+	wantBase := srv.URL
+	if doc.PolicyDecisionPoint != wantBase {
+		t.Errorf("pdp: got %q want %q", doc.PolicyDecisionPoint, wantBase)
+	}
+	if doc.AccessEvaluationEndpoint != wantBase+"/access/v1/evaluation" {
+		t.Errorf("evaluation: got %q want %q", doc.AccessEvaluationEndpoint, wantBase+"/access/v1/evaluation")
+	}
+	if doc.AccessEvaluationsEndpoint != wantBase+"/access/v1/evaluations" {
+		t.Errorf("evaluations: got %q want %q", doc.AccessEvaluationsEndpoint, wantBase+"/access/v1/evaluations")
+	}
+}

@@ -309,6 +309,29 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /.well-known/authzen-configuration:
+    get:
+      tags: [authzen]
+      operationId: getAuthzenDiscovery
+      summary: AuthZEN 1.0 discovery document.
+      description: |
+        Returns the [OpenID AuthZEN 1.0 §8](https://openid.net/specs/authorization-api-1_0.html)
+        discovery document. The PDP base URL is the value of
+        `--issuer-url` when configured (canonical, validated `https`),
+        otherwise it is derived from the incoming request's scheme and
+        `Host` header so a freshly-installed server can answer
+        discovery probes without extra flags. Only the endpoints Omega
+        implements are advertised - the three optional Search APIs are
+        omitted on purpose (per §8 their absence signals "not
+        implemented").
+      responses:
+        "200":
+          description: AuthZEN discovery document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthzenDiscoveryResponse"
+
   /v1/jwt/bundle:
     get:
       tags: [svid]
@@ -782,6 +805,27 @@ components:
           items:
             type: object
             description: A JSON Web Key. Standard RFC 7517 fields.
+
+    AuthzenDiscoveryResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - policy_decision_point
+        - access_evaluation_endpoint
+        - access_evaluations_endpoint
+      properties:
+        policy_decision_point:
+          type: string
+          format: uri
+          description: Base URL of the PDP.
+        access_evaluation_endpoint:
+          type: string
+          format: uri
+          description: Absolute URL of `POST /access/v1/evaluation`.
+        access_evaluations_endpoint:
+          type: string
+          format: uri
+          description: Absolute URL of the batch endpoint `POST /access/v1/evaluations`.
 
     OIDCDiscoveryResponse:
       type: object

@@ -91,7 +91,7 @@ Spec version audited:
 
 | Section | Requirement | Status | omega notes |
 | --- | --- | --- | --- |
-| 8 | Discovery document advertises supported endpoints | deferred | omega's `/.well-known/openid-configuration` covers OIDC-RP needs; an AuthZEN-specific discovery doc is straightforward to add (`getAuthzenDiscovery` mirroring `getOIDCDiscovery`) once a real caller asks |
+| 8 | Discovery document advertises supported endpoints | implemented | `GET /.well-known/authzen-configuration` returns `policy_decision_point` + `access_evaluation_endpoint` + `access_evaluations_endpoint`. The PDP base is `--issuer-url` when set, otherwise derived from the request's scheme + `Host`. The three Search API endpoints are intentionally omitted because omega does not implement them - per §8 an absent field signals "not implemented" |
 
 ## §9 — Security considerations
 
