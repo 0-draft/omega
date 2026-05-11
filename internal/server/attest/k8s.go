@@ -25,6 +25,16 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// ErrTokenRejected is wrapped into every error that represents a
+// validation failure on the token itself: empty input, kube-apiserver
+// returned `Authenticated: false`, the authenticated user was not a
+// service account, or the username was malformed. Callers use
+// `errors.Is(err, attest.ErrTokenRejected)` to distinguish these
+// from infrastructure failures (TokenReview Create returned an
+// error, context cancelled, apiserver 5xx) so the HTTP layer can
+// answer with 401 vs 502 and only audit the former as "deny".
+var ErrTokenRejected = errors.New("k8s attest: token rejected")
+
 // K8sClaims is the subset of a TokenReview response that survives the
 // `(ns, sa[, pod])` projection. Audiences is what kube-apiserver
 // returned, useful for audit context; SPIFFE ID derivation uses only
@@ -65,7 +75,7 @@ func (a *K8sAttestor) Attest(ctx context.Context, token string) (*K8sClaims, err
 		return nil, errors.New("k8s attest: attestor is nil (not configured)")
 	}
 	if token == "" {
-		return nil, errors.New("k8s attest: token is empty")
+		return nil, fmt.Errorf("%w: token is empty", ErrTokenRejected)
 	}
 	review := &authnv1.TokenReview{
 		Spec: authnv1.TokenReviewSpec{
@@ -75,6 +85,9 @@ func (a *K8sAttestor) Attest(ctx context.Context, token string) (*K8sClaims, err
 	}
 	out, err := a.client.AuthenticationV1().TokenReviews().Create(ctx, review, metav1.CreateOptions{})
 	if err != nil {
+		// Apiserver unreachable / 5xx / context cancelled. Not a token
+		// rejection - the caller should retry, not treat this as a
+		// deny in the audit log.
 		return nil, fmt.Errorf("k8s attest: tokenreview: %w", err)
 	}
 	if !out.Status.Authenticated {
@@ -82,17 +95,17 @@ func (a *K8sAttestor) Attest(ctx context.Context, token string) (*K8sClaims, err
 		if msg == "" {
 			msg = "token rejected by kube-apiserver"
 		}
-		return nil, fmt.Errorf("k8s attest: %s", msg)
+		return nil, fmt.Errorf("%w: %s", ErrTokenRejected, msg)
 	}
 	username := out.Status.User.Username
 	const saPrefix = "system:serviceaccount:"
 	if !strings.HasPrefix(username, saPrefix) {
-		return nil, fmt.Errorf("k8s attest: not a service-account token (user=%q)", username)
+		return nil, fmt.Errorf("%w: not a service-account token (user=%q)", ErrTokenRejected, username)
 	}
 	rest := strings.TrimPrefix(username, saPrefix)
 	parts := strings.SplitN(rest, ":", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, fmt.Errorf("k8s attest: malformed service-account user %q", username)
+		return nil, fmt.Errorf("%w: malformed service-account user %q", ErrTokenRejected, username)
 	}
 	claims := &K8sClaims{
 		Namespace:      parts[0],

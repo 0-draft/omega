@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -726,6 +728,52 @@ func TestAttestK8sRejectsTemplateOutOfTrustDomain(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+}
+
+func TestAttestK8sReturns502OnApiserverFailure(t *testing.T) {
+	dir := t.TempDir()
+	store, err := storage.Open(filepath.Join(dir, "omega.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ca, err := identity.LoadOrCreate(filepath.Join(dir, "ca"), "omega.local")
+	if err != nil {
+		t.Fatalf("ca: %v", err)
+	}
+	// Reactor returns a plain error from the Create call - the
+	// apiserver was unreachable, no TokenReviewStatus was produced.
+	// Handler must answer 502 and NOT write an audit-deny row.
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("create", "tokenreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("apiserver unreachable")
+	})
+	attestor := attest.NewK8sAttestor(client, nil)
+	srv := httptest.NewServer(
+		api.NewServer(store, ca, policy.New()).
+			WithK8sAttestor(attestor, "spiffe://omega.local/k8s/{namespace}/{serviceaccount}").
+			Handler(),
+	)
+	t.Cleanup(srv.Close)
+
+	body, _ := json.Marshal(api.K8sAttestRequest{Token: "x", CSR: "y"})
+	resp, err := http.Post(srv.URL+"/v1/attest/k8s", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status: got %d want 502", resp.StatusCode)
+	}
+	events, err := store.ListAudit(context.Background(), 0, 100)
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	for _, ev := range events {
+		if ev.Kind == "attest.k8s" {
+			t.Fatalf("apiserver failure must not produce an attest.k8s audit row, got: %+v", ev)
+		}
 	}
 }
 

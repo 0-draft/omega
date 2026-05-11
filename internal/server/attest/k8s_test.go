@@ -91,8 +91,46 @@ func TestAttestRejectsNonServiceAccountUser(t *testing.T) {
 func TestAttestPropagatesTokenReviewErrors(t *testing.T) {
 	client := makeFakeClient(t, authnv1.TokenReviewStatus{}, errors.New("apiserver unreachable"))
 	a := attest.NewK8sAttestor(client, nil)
-	if _, err := a.Attest(context.Background(), "x.y.z"); err == nil {
+	_, err := a.Attest(context.Background(), "x.y.z")
+	if err == nil {
 		t.Fatal("expected propagated apiserver error")
+	}
+	if errors.Is(err, attest.ErrTokenRejected) {
+		t.Fatalf("apiserver-side failure must NOT match ErrTokenRejected: %v", err)
+	}
+}
+
+// All four token-validation failure paths must surface as
+// ErrTokenRejected so the HTTP layer can answer 401 vs 502 and only
+// audit the former as a deny.
+func TestAttestRejectionsAreErrTokenRejected(t *testing.T) {
+	cases := []struct {
+		name   string
+		status authnv1.TokenReviewStatus
+		token  string
+	}{
+		{"empty token", authnv1.TokenReviewStatus{}, ""},
+		{"unauthenticated", authnv1.TokenReviewStatus{Authenticated: false, Error: "expired"}, "x.y.z"},
+		{"non-SA user", authnv1.TokenReviewStatus{
+			Authenticated: true,
+			User:          authnv1.UserInfo{Username: "system:kube-controller-manager"},
+		}, "x.y.z"},
+		{"malformed SA user", authnv1.TokenReviewStatus{
+			Authenticated: true,
+			User:          authnv1.UserInfo{Username: "system:serviceaccount:onlyone"},
+		}, "x.y.z"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := attest.NewK8sAttestor(makeFakeClient(t, tc.status, nil), nil)
+			_, err := a.Attest(context.Background(), tc.token)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !errors.Is(err, attest.ErrTokenRejected) {
+				t.Fatalf("error must match ErrTokenRejected, got: %v", err)
+			}
+		})
 	}
 }
 
