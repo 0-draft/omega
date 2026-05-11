@@ -3,6 +3,7 @@ package identity
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -10,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -68,13 +71,29 @@ func newVaultPKIAuthority(local *localAuthority, cfg Config) (*vaultPKIAuthority
 	if bundleTTL <= 0 {
 		bundleTTL = defaultVaultPKIBundleTTL
 	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if cfg.VaultPKICACertFile != "" {
+		// Production Vault is almost always behind a private CA; load
+		// it explicitly rather than asking operators to manage the
+		// system trust store on the omega host. Empty path means "use
+		// the system store".
+		caPEM, err := os.ReadFile(cfg.VaultPKICACertFile)
+		if err != nil {
+			return nil, fmt.Errorf("identity: vault-pki: read ca cert %s: %w", cfg.VaultPKICACertFile, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("identity: vault-pki: ca cert %s has no PEM certificates", cfg.VaultPKICACertFile)
+		}
+		transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	}
 	a := &vaultPKIAuthority{
 		localAuthority: local,
 		addr:           addr,
 		token:          cfg.VaultPKIToken,
 		mount:          mount,
 		role:           cfg.VaultPKIRole,
-		httpClient:     &http.Client{Timeout: defaultVaultPKITimeout},
+		httpClient:     &http.Client{Timeout: defaultVaultPKITimeout, Transport: transport},
 		bundleTTL:      bundleTTL,
 	}
 	// Boot-time probe so a bad addr / token / mount fails fast.
@@ -85,32 +104,30 @@ func newVaultPKIAuthority(local *localAuthority, cfg Config) (*vaultPKIAuthority
 }
 
 // BundlePEM overrides the embedded localAuthority's bundle. The
-// chain is cached; refreshBundle is the only path that touches the
-// network and concurrent refreshes serialise behind a single fetch
-// via the bundleMu write lock.
+// returned slice is always a defensive copy so callers cannot
+// mutate the cached buffer. The cache itself follows the same
+// `Lock; check; Unlock; fetch; Lock; store; Unlock` shape as the
+// agent's JWKS cache: the network call never holds the lock.
 func (a *vaultPKIAuthority) BundlePEM() []byte {
 	a.bundleMu.RLock()
-	now := time.Now()
-	if len(a.bundle) > 0 && now.Before(a.bundleExp) {
-		out := a.bundle
+	if len(a.bundle) > 0 && time.Now().Before(a.bundleExp) {
+		out := append([]byte(nil), a.bundle...)
 		a.bundleMu.RUnlock()
 		return out
 	}
+	stale := append([]byte(nil), a.bundle...)
 	a.bundleMu.RUnlock()
 
 	// Best-effort refresh. If the refresh fails (Vault unreachable,
 	// token expired), serve the stale bundle - it's still the trust
 	// anchor consumers were chaining to before the blip. Returning
 	// nil would suddenly break every workload's mTLS handshake.
-	if _, err := a.refreshBundle(context.Background()); err == nil {
-		a.bundleMu.RLock()
-		out := a.bundle
-		a.bundleMu.RUnlock()
-		return out
+	if _, err := a.refreshBundle(context.Background()); err != nil {
+		return stale
 	}
 	a.bundleMu.RLock()
 	defer a.bundleMu.RUnlock()
-	return a.bundle
+	return append([]byte(nil), a.bundle...)
 }
 
 // IssueSVID forwards the CSR to Vault PKI's
@@ -143,7 +160,11 @@ func (a *vaultPKIAuthority) IssueSVID(id spiffeid.ID, csr *x509.CertificateReque
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), defaultVaultPKITimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/v1/%s/sign/%s", a.addr, a.mount, a.role), bytes.NewReader(body))
+	// mount and role come from operator-supplied flags; URL-escape
+	// both so a legal-but-unusual path segment (e.g. "team/sub-pki",
+	// a role with whitespace) cannot break the request URL.
+	signURL := fmt.Sprintf("%s/v1/%s/sign/%s", a.addr, urlEscapePathSegments(a.mount), url.PathEscape(a.role))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, signURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("vault-pki: new request: %w", err)
 	}
@@ -158,13 +179,17 @@ func (a *vaultPKIAuthority) IssueSVID(id spiffeid.ID, csr *x509.CertificateReque
 		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("vault-pki: sign returned %d: %s", resp.StatusCode, strings.TrimSpace(string(preview)))
 	}
+	// 1 MiB cap on the upstream response: real Vault PKI replies are
+	// a few KiB; this bounds memory if a misconfigured / malicious
+	// upstream sends a huge body.
+	const maxVaultSignResp = 1 << 20
 	var out struct {
 		Data struct {
 			Certificate string   `json:"certificate"`
 			CAChain     []string `json:"ca_chain"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxVaultSignResp)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("vault-pki: decode: %w", err)
 	}
 	if out.Data.Certificate == "" {
@@ -178,6 +203,24 @@ func (a *vaultPKIAuthority) IssueSVID(id spiffeid.ID, csr *x509.CertificateReque
 	if err != nil {
 		return nil, fmt.Errorf("vault-pki: parse certificate: %w", err)
 	}
+	// Defence in depth: a Vault role misconfiguration (or a hostile
+	// upstream) could return a certificate whose SAN or public key
+	// is not what omega asked for. Reject mismatches before handing
+	// the SVID back to the workload.
+	if !bytes.Equal(cert.RawSubjectPublicKeyInfo, csr.RawSubjectPublicKeyInfo) {
+		return nil, errors.New("vault-pki: issued certificate public key does not match CSR")
+	}
+	wantURI := id.URL().String()
+	var haveURI bool
+	for _, u := range cert.URIs {
+		if u.String() == wantURI {
+			haveURI = true
+			break
+		}
+	}
+	if !haveURI {
+		return nil, fmt.Errorf("vault-pki: issued certificate URI SANs %v do not contain requested SPIFFE ID %q", cert.URIs, wantURI)
+	}
 	return &SVID{
 		SPIFFEID:  id,
 		CertPEM:   []byte(out.Data.Certificate),
@@ -187,19 +230,31 @@ func (a *vaultPKIAuthority) IssueSVID(id spiffeid.ID, csr *x509.CertificateReque
 	}, nil
 }
 
+// urlEscapePathSegments escapes each '/'-separated segment of p so
+// the Vault mount path "team/sub-pki" survives URL building without
+// collapsing into "team%2Fsub-pki" (which would not match Vault's
+// router).
+func urlEscapePathSegments(p string) string {
+	parts := strings.Split(p, "/")
+	for i, seg := range parts {
+		parts[i] = url.PathEscape(seg)
+	}
+	return strings.Join(parts, "/")
+}
+
 // refreshBundle pulls /v1/<mount>/ca_chain and replaces the cached
-// bytes. Returns the freshly fetched bytes for the caller's
-// convenience but the canonical value is what BundlePEM reads
-// under bundleMu afterwards.
+// bytes. The HTTP fetch is done outside the lock so cache-hit
+// callers via BundlePEM are not blocked by a slow Vault. Two
+// concurrent refreshes may both fetch; the last write wins, both
+// observers end up reading a valid bundle.
 func (a *vaultPKIAuthority) refreshBundle(ctx context.Context) ([]byte, error) {
-	a.bundleMu.Lock()
-	defer a.bundleMu.Unlock()
 	if ctx == nil {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(context.Background(), defaultVaultPKITimeout)
 		defer cancel()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/v1/%s/ca_chain", a.addr, a.mount), nil)
+	chainURL := fmt.Sprintf("%s/v1/%s/ca_chain", a.addr, urlEscapePathSegments(a.mount))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, chainURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("vault-pki: new ca_chain request: %w", err)
 	}
@@ -220,7 +275,9 @@ func (a *vaultPKIAuthority) refreshBundle(ctx context.Context) ([]byte, error) {
 	if len(body) == 0 || !bytes.Contains(body, []byte("-----BEGIN CERTIFICATE-----")) {
 		return nil, fmt.Errorf("vault-pki: ca_chain response is not PEM (got %d bytes)", len(body))
 	}
+	a.bundleMu.Lock()
 	a.bundle = body
 	a.bundleExp = time.Now().Add(a.bundleTTL)
+	a.bundleMu.Unlock()
 	return body, nil
 }
