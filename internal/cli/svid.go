@@ -220,6 +220,81 @@ func newSVIDCommand() *cobra.Command {
 	jwtFetch.Flags().StringVar(&jwtSocket, "socket", "/tmp/omega-agent.sock", "Workload API unix socket")
 	jwtFetch.Flags().StringSliceVar(&jwtAudience, "audience", nil, "audience(s) the JWT-SVID is bound to (repeatable)")
 
-	cmd.AddCommand(fetch, issue, jwtFetch)
+	var (
+		validateSocket   string
+		validateAudience string
+		validateAsJSON   bool
+	)
+	validate := &cobra.Command{
+		Use:   "validate <jwt>",
+		Short: "Validate a JWT-SVID via the local agent (SPIFFE Workload API ValidateJWTSVID)",
+		Long: `Validate a JWT-SVID via the local agent.
+
+The token is read from the positional argument; "-" reads from stdin
+so the caller can pipe in a token without putting it on the
+command line.
+
+On success the SPIFFE ID, audience(s), expiry, and claims are
+printed. --json switches to a single-line JSON object suitable for
+piping into jq.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			if strings.TrimSpace(validateAudience) == "" {
+				return fmt.Errorf("--audience is required")
+			}
+			token := args[0]
+			if token == "-" {
+				raw, err := io.ReadAll(c.InOrStdin())
+				if err != nil {
+					return fmt.Errorf("read token from stdin: %w", err)
+				}
+				token = strings.TrimSpace(string(raw))
+			}
+			if token == "" {
+				return fmt.Errorf("token is empty")
+			}
+			ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
+			defer cancel()
+			client, err := workloadapi.New(ctx, workloadapi.WithAddr("unix://"+validateSocket))
+			if err != nil {
+				return fmt.Errorf("connect to %s: %w", validateSocket, err)
+			}
+			defer client.Close()
+			svid, err := client.ValidateJWTSVID(ctx, token, validateAudience)
+			if err != nil {
+				return fmt.Errorf("validate: %w", err)
+			}
+			out := c.OutOrStdout()
+			if validateAsJSON {
+				return json.NewEncoder(out).Encode(map[string]any{
+					"valid":     true,
+					"spiffe_id": svid.ID.String(),
+					"audience":  svid.Audience,
+					"expires":   svid.Expiry.Format(time.RFC3339),
+					"claims":    svid.Claims,
+				})
+			}
+			_, _ = fmt.Fprintf(out, "valid:    true\n")
+			_, _ = fmt.Fprintf(out, "spiffe-id: %s\n", svid.ID)
+			_, _ = fmt.Fprintf(out, "audience:  %s\n", strings.Join(svid.Audience, ","))
+			_, _ = fmt.Fprintf(out, "expires:   %s\n", svid.Expiry.Format(time.RFC3339))
+			// Claims are ordered for stable diffability; only show the
+			// ones operators usually care about and drop standard time
+			// claims already printed above.
+			interestingClaims := []string{"iss", "act", "scope", "cnf", "preferred_username", "email", "name"}
+			for _, k := range interestingClaims {
+				if v, ok := svid.Claims[k]; ok {
+					b, _ := json.Marshal(v)
+					_, _ = fmt.Fprintf(out, "claim.%s: %s\n", k, string(b))
+				}
+			}
+			return nil
+		},
+	}
+	validate.Flags().StringVar(&validateSocket, "socket", "/tmp/omega-agent.sock", "Workload API unix socket")
+	validate.Flags().StringVar(&validateAudience, "audience", "", "audience to validate the JWT-SVID against (required)")
+	validate.Flags().BoolVar(&validateAsJSON, "json", false, "emit a single-line JSON object instead of human-readable lines")
+
+	cmd.AddCommand(fetch, issue, jwtFetch, validate)
 	return cmd
 }

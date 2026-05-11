@@ -71,6 +71,14 @@ changes (see [SECURITY.md](SECURITY.md)).
   shape as the single-evaluation endpoint. Closes the spec-required
   AuthZEN 1.0 §5.2 conformance gap (Search APIs are optional and
   remain on the roadmap).
+- `omega svid validate <jwt> --audience <aud>` subcommand. Reads the
+  token from the positional argument (or `-` for stdin), dials the
+  local agent's Workload API socket, calls `ValidateJWTSVID`, and
+  prints the SPIFFE ID + audience + expiry + selected claims.
+  `--json` switches to a single-line JSON shape for piping into
+  `jq`. Operator-facing front-end for the RPC that has been
+  available to gRPC clients since v0.0.1; no Go code needed to
+  ask "is this token good".
 - Agent-side JWKS cache. `internal/agent/workloadapi/server.go`
   now serves `/v1/jwt/bundle` from a 1-minute TTL'd cache shared
   between `FetchJWTBundles` (the streaming RPC) and
