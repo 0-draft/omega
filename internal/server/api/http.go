@@ -471,15 +471,20 @@ func (s *Server) attestK8s(w http.ResponseWriter, r *http.Request) {
 	}
 	claims, err := s.k8sAttestor.Attest(r.Context(), req.Token)
 	if err != nil {
-		// Audit the rejection so denial-of-service bursts and bad
-		// tokens are observable. Subject is the namespace/sa pair if
-		// we got that far, otherwise the empty string.
-		s.audit(r.Context(), storage.AuditEvent{
-			Kind:     "attest.k8s",
-			Decision: "deny",
-			Payload:  mustJSON(map[string]string{"error": err.Error()}),
-		})
-		writeErr(w, http.StatusUnauthorized, err)
+		// Distinguish a real token rejection (audited as deny, 401)
+		// from an apiserver / network failure (502, no audit row -
+		// it is not a security event, and counting it as deny would
+		// skew the rejection rate operators chart against).
+		if errors.Is(err, attest.ErrTokenRejected) {
+			s.audit(r.Context(), storage.AuditEvent{
+				Kind:     "attest.k8s",
+				Decision: "deny",
+				Payload:  mustJSON(map[string]string{"error": err.Error()}),
+			})
+			writeErr(w, http.StatusUnauthorized, err)
+			return
+		}
+		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	idStr, err := attest.RenderSPIFFEID(s.k8sSVIDTemplate, claims)
