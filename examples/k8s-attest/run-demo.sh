@@ -69,9 +69,13 @@ fi
 KUBECONFIG_FILE="$DEMO_DIR/kubeconfig"
 kind get kubeconfig --name "$CLUSTER_NAME" >"$KUBECONFIG_FILE"
 
-echo "[demo] creating ns=$NAMESPACE sa=$SERVICE_ACCOUNT"
-KUBECONFIG="$KUBECONFIG_FILE" kubectl create namespace "$NAMESPACE" >/dev/null
-KUBECONFIG="$KUBECONFIG_FILE" kubectl -n "$NAMESPACE" create serviceaccount "$SERVICE_ACCOUNT" >/dev/null
+echo "[demo] ensuring ns=$NAMESPACE sa=$SERVICE_ACCOUNT"
+# Idempotent get-or-create so KEEP_CLUSTER=1 reruns succeed against a
+# cluster that already has the demo namespace and ServiceAccount.
+KUBECONFIG="$KUBECONFIG_FILE" kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 ||
+	KUBECONFIG="$KUBECONFIG_FILE" kubectl create namespace "$NAMESPACE" >/dev/null
+KUBECONFIG="$KUBECONFIG_FILE" kubectl -n "$NAMESPACE" get sa "$SERVICE_ACCOUNT" >/dev/null 2>&1 ||
+	KUBECONFIG="$KUBECONFIG_FILE" kubectl -n "$NAMESPACE" create serviceaccount "$SERVICE_ACCOUNT" >/dev/null
 
 echo "[demo] minting projected SA token (audience=$TOKEN_AUDIENCE)"
 # `kubectl create token` enforces a 10-minute minimum lifetime (the
@@ -98,9 +102,11 @@ wait_for_url "http://127.0.0.1:$SERVER_PORT/healthz" "$DEMO_DIR/server.log"
 
 # Generate a workload keypair + CSR. openssl `-subj` splits on '/',
 # so the SPIFFE URI must NOT live in the CN - omega derives the
-# SPIFFE ID from the validated token, not from CSR fields.
-openssl ecparam -name prime256v1 -genkey -noout -out "$DEMO_DIR/wl.key" 2>/dev/null
-openssl req -new -key "$DEMO_DIR/wl.key" -subj "/CN=omega-k8s-attest-workload" -out "$DEMO_DIR/wl.csr" 2>/dev/null
+# SPIFFE ID from the validated token, not from CSR fields. Stderr is
+# left visible: under `set -e` a tooling failure here aborts the
+# demo, and seeing the openssl error is the fastest path to a fix.
+openssl ecparam -name prime256v1 -genkey -noout -out "$DEMO_DIR/wl.key"
+openssl req -new -key "$DEMO_DIR/wl.key" -subj "/CN=omega-k8s-attest-workload" -out "$DEMO_DIR/wl.csr"
 CSR_PEM_JSON=$(python3 -c "import json; print(json.dumps(open('$DEMO_DIR/wl.csr').read()))")
 
 echo "[demo] attesting with a correct-audience token (expect 200)"
@@ -124,9 +130,9 @@ if ! openssl verify -CAfile "$DEMO_DIR/bundle.pem" "$DEMO_DIR/leaf.pem" >"$DEMO_
 	sed 's/^/       /' "$DEMO_DIR/verify.log"
 	exit 1
 fi
-if ! openssl x509 -in "$DEMO_DIR/leaf.pem" -noout -text 2>/dev/null | grep -q "URI:$EXPECTED_SPIFFE_ID"; then
+if ! openssl x509 -in "$DEMO_DIR/leaf.pem" -noout -text | grep -q "URI:$EXPECTED_SPIFFE_ID"; then
 	echo "[demo] FAIL: leaf does not carry the SPIFFE ID URI SAN"
-	openssl x509 -in "$DEMO_DIR/leaf.pem" -noout -text 2>/dev/null | grep -A2 'Subject Alternative Name' | sed 's/^/       /'
+	openssl x509 -in "$DEMO_DIR/leaf.pem" -noout -text | grep -A2 'Subject Alternative Name' | sed 's/^/       /'
 	exit 1
 fi
 
@@ -143,6 +149,6 @@ fi
 
 echo "[demo] success"
 echo "[demo]   spiffe_id:   $GOT_SPIFFE_ID"
-echo "[demo]   trust_anchor: $(openssl x509 -in "$DEMO_DIR/bundle.pem" -noout -subject 2>/dev/null)"
-echo "[demo]   leaf issuer:  $(openssl x509 -in "$DEMO_DIR/leaf.pem" -noout -issuer 2>/dev/null)"
+echo "[demo]   trust_anchor: $(openssl x509 -in "$DEMO_DIR/bundle.pem" -noout -subject)"
+echo "[demo]   leaf issuer:  $(openssl x509 -in "$DEMO_DIR/leaf.pem" -noout -issuer)"
 echo "[demo]   deny path:    wrong-audience token rejected with HTTP 401"
