@@ -86,6 +86,19 @@ changes (see [SECURITY.md](SECURITY.md)).
   `--ca-step-ca-provisioner`, `--ca-step-ca-provisioner-key-file`,
   `--ca-step-ca-ca-cert`. Validates the Plugin pattern on a second
   upstream signer.
+- `examples/spiffe-bundle-tdf/` — runnable demo proving omega's
+  `GET /v1/spiffe-bundle` response is consumed end-to-end by the
+  upstream `go-spiffe v2` SDK. The tiny `cmd/consumer` binary
+  HTTP-GETs the endpoint, hands the body to
+  `spiffebundle.Read(td, body)` from
+  `github.com/spiffe/go-spiffe/v2/bundle/spiffebundle`, and
+  asserts the parsed bundle exposes both X.509 and JWT
+  authorities plus the `SequenceNumber` and `RefreshHint`
+  envelope fields. Closes the interop story for the SPIFFE TDF
+  endpoint: any regression that breaks the on-the-wire shape
+  trips the SDK parser instead of silently working against a
+  permissive hand-rolled decoder. Added to the CI examples
+  matrix.
 - `examples/ca-step-ca/` — runnable demo of the step-ca backend.
   `mock-step-ca` Go binary stands up its own ECDSA Root CA and
   exposes the two endpoints omega calls (`GET /roots.pem`,
