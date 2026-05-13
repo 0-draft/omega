@@ -62,7 +62,6 @@ release as features are ready rather than on a fixed cadence; see
   committing to an in-tree implementation.
 - NIST PQC: ML-DSA / ML-KEM / SLH-DSA support for CA and JWT-SVID
   signing once Go's standard library exposes stable APIs.
-- SPIFFE CSI driver integration.
 
 ## Non-goals
 
