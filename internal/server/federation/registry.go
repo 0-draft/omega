@@ -148,6 +148,12 @@ func (r *Registry) hasPeer(trustDomain string) bool {
 // poll cadence) and blocks until ctx is canceled. The initial fetch
 // happens inside each goroutine, so a slow peer cannot delay the
 // first /v1/federation/bundles answer for the others.
+//
+// The explicit `<-ctx.Done()` keeps Run's contract intact when no
+// peers are configured: WaitGroup.Wait returns immediately on a
+// zero counter, so without the ctx receive Run would race ahead of
+// its caller's `go fed.Run(ctx)` expectation that it stays alive
+// until cancellation.
 func (r *Registry) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, p := range r.peers {
@@ -157,6 +163,7 @@ func (r *Registry) Run(ctx context.Context) {
 			r.runPeer(ctx, peer)
 		}(p)
 	}
+	<-ctx.Done()
 	wg.Wait()
 }
 
@@ -169,15 +176,19 @@ func (r *Registry) runPeer(ctx context.Context, peer PeerConfig) {
 	r.refreshOne(ctx, peer)
 	// Initial backoff sequence in case the peer was not ready yet. We
 	// only re-fetch when the previous attempt did not populate this
-	// peer's bundle.
+	// peer's bundle. Total sequence is 8.7s, long enough that the
+	// time.After leak on cancellation is worth avoiding - use the
+	// same NewTimer+Stop dance the steady-state loop uses below.
 	for _, d := range []time.Duration{200 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second, 2 * time.Second, 5 * time.Second} {
 		if r.peerHasBundle(peer.TrustDomain) {
 			break
 		}
+		timer := time.NewTimer(d)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-time.After(d):
+		case <-timer.C:
 			r.refreshOne(ctx, peer)
 		}
 	}
