@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -236,6 +240,29 @@ jobs:
           node-version: '22'
       - name: redocly lint
         run: npx --yes @redocly/cli@latest lint api/openapi.yaml
+
+  ui:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: install dependencies
+        working-directory: ui
+        run: npm ci
+      - name: typecheck
+        working-directory: ui
+        run: npm run typecheck
+      - name: lint
+        working-directory: ui
+        run: npm run lint
+      - name: build
+        working-directory: ui
+        run: npm run build
 
   image:
     runs-on: ubuntu-latest
