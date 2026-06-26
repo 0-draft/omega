@@ -160,6 +160,12 @@ enrollment gate:
    registration entry, and issues the SVID. This is the root of the
    enrollment chain when no platform attestor is available.
 
+   The token is a bearer credential, so the DB must store only a hash
+   of it (the token is shown once at `generate` time, never persisted
+   in cleartext); `attest/join-token` hashes the presented value and
+   compares. Combined with single-use + short TTL, this bounds the
+   blast radius if the table leaks: a stolen row cannot be replayed.
+
 3. **Require an authenticated + attested caller for every write and
    PDP endpoint.** Once a caller holds an SVID, subsequent calls
    authenticate with that SVID over mTLS (Option A). Authorization of
@@ -308,11 +314,16 @@ Two complementary changes:
 
 ### H1 key management and verify-side changes
 
-- **Key management:** the HMAC key is operator-supplied and rotatable.
-  On rotation, record a key epoch in each row (a small `key_id`
-  column) so `VerifyAudit` selects the right key per row; old rows stay
-  verifiable under the old key. The key file is mounted read-only and
-  excluded from any DB backup path.
+- **Key management:** the HMAC key material is operator-supplied and
+  rotatable. The key file is a **keyring**, not a single key: one key is
+  marked active (used to MAC new rows) and any number of retired keys are
+  retained for verification only, each addressed by `key_id`. On rotation
+  the operator appends a new active key and demotes the previous one to
+  retired — it is **not** removed, otherwise rows written under it become
+  unverifiable. Each row records the `key_id` it was MAC'd under, so
+  `VerifyAudit` selects the matching key; old rows stay verifiable under
+  their retired key. The keyring file is mounted read-only and excluded
+  from any DB backup path.
 - **Verify-side:** `VerifyAudit` gains (a) HMAC recomputation with the
   per-row key epoch, (b) an optional `expectedHead` / `expectedCount`
   parameter sourced from the latest external checkpoint, and (c) a
@@ -391,9 +402,21 @@ profiles:
      the control-plane link. Use go-spiffe's `tlsconfig` to build the
      verifying `http.Client` instead of the bare default client.
 
+   **Bootstrap for `https_spiffe`:** the first fetch is a chicken-and-egg
+   — verifying the endpoint SVID needs the peer's bundle, which is what
+   we are fetching. Resolve it out-of-band: the operator pins an initial
+   trust bundle for the peer (`endpoint_bundle=<file>`, obtained through a
+   trusted channel) that seeds verification of the first connection;
+   subsequent refreshes verify against the now-known, auto-updated bundle.
+   Where an out-of-band bundle is impractical, allow a one-time
+   `https_web`-verified first fetch (web-PKI + pinned `endpoint_spiffe_id`)
+   to seed the bundle, then pin `https_spiffe` for all later refreshes
+   (trust-on-first-use, logged). The bundle is never accepted unverified.
+
 3. **Config surface (per peer):** extend the `--federate-with` grammar
    with `profile=https_web|https_spiffe`, `endpoint_spiffe_id=...`,
-   and `endpoint_ca=...` keys (the parser in `parseFederatePeers`
+   `endpoint_ca=...`, and `endpoint_bundle=...` (the bootstrap bundle)
+   keys (the parser in `parseFederatePeers`
    already splits comma-separated `key=value`). `NewRegistry` takes a
    per-peer verifier and constructs the `http.Client` accordingly,
    replacing the single shared default client.
