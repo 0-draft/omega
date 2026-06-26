@@ -259,6 +259,13 @@ func newServerCommand() *cobra.Command {
 			}
 
 			if k8sAttestEnable {
+				// An empty audience disables TokenReview's audience check,
+				// which lets any pod's default ServiceAccount token be
+				// replayed against omega. Require an explicit audience so
+				// the misconfiguration fails fast at startup.
+				if !hasNonEmpty(k8sTokenAudiences) {
+					return errors.New("k8s-attest: --k8s-token-audience is required when --k8s-attest=true (set it to the URL workloads use to reach omega so replayed default SA tokens are rejected)")
+				}
 				k8sClient, err := buildK8sClient(k8sKubeconfig)
 				if err != nil {
 					return fmt.Errorf("k8s-attest: %w", err)
@@ -356,7 +363,7 @@ func newServerCommand() *cobra.Command {
 		"spiffe://omega.local/k8s/{namespace}/{serviceaccount}",
 		"SPIFFE ID template for k8s-attested SVIDs. Placeholders: {namespace}, {serviceaccount}, {podname}. The rendered ID must lie in --trust-domain.")
 	cmd.Flags().StringSliceVar(&k8sTokenAudiences, "k8s-token-audience", nil,
-		"expected audience(s) on the projected token (repeat to allow more than one). Empty disables the audience check; set to the URL workloads use to reach omega (e.g. https://omega.example.com).")
+		"expected audience(s) on the projected token (repeat to allow more than one). Required when --k8s-attest=true: set to the URL workloads use to reach omega (e.g. https://omega.example.com) so a replayed default ServiceAccount token, which carries no such audience, is rejected.")
 	cmd.Flags().StringVar(&k8sKubeconfig, "kubeconfig", "",
 		"path to a kubeconfig for out-of-cluster runs (used by --k8s-attest). Empty = use the in-cluster ServiceAccount config, falling back to the default kubeconfig discovery if that fails.")
 
@@ -384,6 +391,18 @@ func newServerCommand() *cobra.Command {
 // whether to start leader election without exporting it from storage.
 func isPostgresDSN(spec string) bool {
 	return strings.HasPrefix(spec, "postgres://") || strings.HasPrefix(spec, "postgresql://")
+}
+
+// hasNonEmpty reports whether vals contains at least one entry that is
+// not blank after trimming. Used to reject an effectively-empty
+// --k8s-token-audience (e.g. `--k8s-token-audience=` or whitespace).
+func hasNonEmpty(vals []string) bool {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveVaultToken assembles the Vault token from (in order of
