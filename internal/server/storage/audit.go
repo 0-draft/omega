@@ -338,6 +338,13 @@ func (s *Store) VerifyAudit(ctx context.Context, anchor *AuditAnchor) (AuditVeri
 		res.Count++
 		res.HeadHash = ev.Hash
 		prev = ev.Hash
+		if res.FirstBadSeq != 0 {
+			// The chain is broken at this seq; rows past a tampered/forged
+			// row can't be trusted or meaningfully counted, so stop walking
+			// (valid is already false). The anchor truncation check below is
+			// moot once first_bad_seq is set.
+			break
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return AuditVerification{}, fmt.Errorf("audit: verify rows: %w", err)
