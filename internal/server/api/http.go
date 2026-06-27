@@ -1140,10 +1140,18 @@ func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
 	// unanchored (truncation above the live tail is invisible, as before).
 	var anchor *storage.AuditAnchor
 	head := r.URL.Query().Get("expected_head")
+	countStr := r.URL.Query().Get("expected_count")
+	if (head != "") != (countStr != "") {
+		// Only one of the pair was supplied. Anchoring needs both; silently
+		// falling back to an unanchored walk would skip the truncation
+		// check the caller asked for, so reject instead.
+		writeErr(w, http.StatusBadRequest, errors.New("expected_head and expected_count must be provided together for anchored verification"))
+		return
+	}
 	if head != "" {
-		count, err := strconv.ParseInt(r.URL.Query().Get("expected_count"), 10, 64)
+		count, err := strconv.ParseInt(countStr, 10, 64)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("expected_count must accompany expected_head and be an integer: %w", err))
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("expected_count must be an integer: %w", err))
 			return
 		}
 		anchor = &storage.AuditAnchor{HeadHash: head, Count: count}

@@ -584,6 +584,24 @@ func TestHTTPAuditCapturesEvents(t *testing.T) {
 	}
 }
 
+// Anchored verification needs both expected_head and expected_count;
+// supplying only one must 400 rather than silently running an unanchored
+// walk that skips the truncation check the caller asked for.
+func TestHTTPAuditVerifyAnchorRequiresBothParams(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	for _, q := range []string{"expected_count=5", "expected_head=abc123"} {
+		resp, err := http.Get(srv.URL + "/v1/audit/verify?" + q)
+		if err != nil {
+			t.Fatalf("get %s: %v", q, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("verify?%s: got %d want 400", q, resp.StatusCode)
+		}
+	}
+}
+
 func TestHTTPJWTSVIDIssueAndBundle(t *testing.T) {
 	srv := newTestServer(t)
 
