@@ -191,3 +191,17 @@ func (kr *AuditKeyring) lookup(keyID string) (secret []byte, ok bool) {
 	secret, ok = kr.keys[keyID]
 	return secret, ok
 }
+
+// Snapshot returns a copy of the keyring's id->secret map taken under a
+// single read lock. VerifyAudit takes one snapshot before walking the
+// chain so per-row key lookups are lock-free and see a consistent set of
+// keys even if SIGHUP rotates the keyring mid-verify.
+func (kr *AuditKeyring) Snapshot() map[string][]byte {
+	kr.mu.RLock()
+	defer kr.mu.RUnlock()
+	cp := make(map[string][]byte, len(kr.keys))
+	for id, k := range kr.keys {
+		cp[id] = k
+	}
+	return cp
+}

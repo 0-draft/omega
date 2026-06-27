@@ -262,6 +262,14 @@ func (s *Store) VerifyAudit(ctx context.Context, anchor *AuditAnchor) (AuditVeri
 	}
 	defer rows.Close()
 
+	// Take one consistent snapshot of the keyring up front so per-row key
+	// lookups are lock-free and unaffected by a concurrent SIGHUP rotation
+	// mid-walk.
+	var keySnap map[string][]byte
+	if s.auditKeyring != nil {
+		keySnap = s.auditKeyring.Snapshot()
+	}
+
 	res := AuditVerification{HeadHash: genesisHash}
 	prev := genesisHash
 	sawAnchorHead := anchor != nil && anchor.HeadHash == genesisHash
@@ -291,9 +299,19 @@ func (s *Store) VerifyAudit(ctx context.Context, anchor *AuditAnchor) (AuditVeri
 				// row breaks the contiguous keyed suffix.
 				res.FirstBadSeq = ev.Seq
 			default:
-				key, kerr := s.auditKeyFor(ev.KeyID)
-				if kerr != nil {
-					return AuditVerification{}, fmt.Errorf("audit: verify seq %d: %w", ev.Seq, kerr)
+				// isUnkeyed rows that reach here are legitimate legacy
+				// (pre-keying) rows → nil key → legacy SHA-256. Keyed rows
+				// resolve their secret from the snapshot.
+				var key []byte
+				if !isUnkeyed {
+					if s.auditKeyring == nil {
+						return AuditVerification{}, fmt.Errorf("audit: verify seq %d: row MAC'd under key %q but no keyring is loaded", ev.Seq, ev.KeyID)
+					}
+					k, ok := keySnap[ev.KeyID]
+					if !ok {
+						return AuditVerification{}, fmt.Errorf("audit: verify seq %d: row MAC'd under key %q which is not in the keyring", ev.Seq, ev.KeyID)
+					}
+					key = k
 				}
 				want := macAuditEvent(ev, key)
 				got, derr := hex.DecodeString(ev.Hash)
@@ -343,24 +361,6 @@ func (s *Store) auditKeyedFromSeq(ctx context.Context) (seq int64, ok bool, err 
 		return 0, false, fmt.Errorf("audit: read keying epoch: %w", err)
 	}
 	return seq, true, nil
-}
-
-// auditKeyFor returns the HMAC key for a row's key_id. The unkeyed
-// sentinel yields a nil key (legacy SHA-256). For any other id the
-// keyring must hold the key, otherwise the row cannot be verified and the
-// caller surfaces that as an error rather than silently passing.
-func (s *Store) auditKeyFor(keyID string) ([]byte, error) {
-	if keyID == "" || keyID == keyIDUnkeyed {
-		return nil, nil
-	}
-	if s.auditKeyring == nil {
-		return nil, fmt.Errorf("row MAC'd under key %q but no keyring is loaded", keyID)
-	}
-	key, ok := s.auditKeyring.lookup(keyID)
-	if !ok {
-		return nil, fmt.Errorf("row MAC'd under key %q which is not in the keyring", keyID)
-	}
-	return key, nil
 }
 
 // macAuditEvent computes a row's chained MAC as raw bytes.
