@@ -110,6 +110,35 @@ func TestParseFederatePeersUnknownProfile(t *testing.T) {
 	}
 }
 
+// Pins under the web-PKI profile are silently ineffective, so supplying
+// them with profile=https_web (or default) is a footgun and must error
+// rather than quietly verify by web-PKI only.
+func TestParseFederatePeersRejectsPinsUnderHTTPSWeb(t *testing.T) {
+	cases := map[string]string{
+		"spiffe_id under web": "name=omega.beta,url=https://omega.beta:8443,endpoint_spiffe_id=spiffe://omega.beta/cp",
+		"bundle under web":    "name=omega.beta,url=https://omega.beta:8443,profile=https_web,endpoint_bundle=/etc/omega/beta.pem",
+	}
+	for name, spec := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseFederatePeers([]string{spec}, false); err == nil {
+				t.Fatalf("expected %s to be rejected", name)
+			}
+		})
+	}
+}
+
+// Peer clients are keyed by trust domain; a duplicate name would
+// overwrite the earlier peer's verifying client, so it must be rejected.
+func TestParseFederatePeersRejectsDuplicateName(t *testing.T) {
+	specs := []string{
+		"name=omega.beta,url=https://omega.beta:8443",
+		"name=omega.beta,url=https://other.beta:8443",
+	}
+	if _, err := parseFederatePeers(specs, false); err == nil {
+		t.Fatal("expected duplicate peer name to be rejected")
+	}
+}
+
 // Enabling --k8s-attest without an audience leaves TokenReview's
 // audience check disabled, which lets any pod's default ServiceAccount
 // token be replayed. The server must refuse to start in that state.

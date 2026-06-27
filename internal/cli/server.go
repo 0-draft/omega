@@ -613,6 +613,7 @@ func parseFederatePeers(specs []string, allowInsecure bool) ([]federation.PeerCo
 		slog.Warn("federation: --federation-allow-insecure is set; http:// peer endpoints will be fetched WITHOUT transport authentication (MITM can inject a rogue CA). Use this only for loopback/demo.")
 	}
 	out := make([]federation.PeerConfig, 0, len(specs))
+	seen := make(map[string]bool, len(specs))
 	for _, s := range specs {
 		var p federation.PeerConfig
 		var rawURL string
@@ -643,6 +644,13 @@ func parseFederatePeers(specs []string, allowInsecure bool) ([]federation.PeerCo
 		if p.TrustDomain == "" || rawURL == "" {
 			return nil, fmt.Errorf("entry %q is missing name or url", s)
 		}
+		if seen[p.TrustDomain] {
+			// Clients are keyed by trust domain; a duplicate would overwrite
+			// the earlier peer's verifying client and could run a pinned
+			// peer's fetch on a non-pinned one. Reject the ambiguity.
+			return nil, fmt.Errorf("entry %q: duplicate federation peer name %q", s, p.TrustDomain)
+		}
+		seen[p.TrustDomain] = true
 		u, err := url.Parse(rawURL)
 		if err != nil {
 			return nil, fmt.Errorf("entry %q: parse url: %w", s, err)
@@ -663,6 +671,13 @@ func parseFederatePeers(specs []string, allowInsecure bool) ([]federation.PeerCo
 		}
 		switch p.Profile {
 		case federation.ProfileHTTPSWeb:
+			// Pins only take effect under https_spiffe. If the operator set
+			// them but left the profile at web-PKI, the pin is silently
+			// dropped and the link is weaker than intended — reject loudly
+			// instead of honouring a footgun.
+			if p.EndpointSPIFFEID != "" || p.EndpointBundleFile != "" {
+				return nil, fmt.Errorf("entry %q: endpoint_spiffe_id/endpoint_bundle require profile=https_spiffe (they are ignored under https_web)", s)
+			}
 		case federation.ProfileHTTPSSPIFFE:
 			if p.EndpointSPIFFEID == "" {
 				return nil, fmt.Errorf("entry %q: profile https_spiffe requires endpoint_spiffe_id", s)
