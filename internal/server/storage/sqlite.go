@@ -41,6 +41,10 @@ type Store struct {
 	driver       driverKind
 	leader       leaderState
 	auditKeyring *AuditKeyring
+	// keyedEpochRecorded short-circuits the per-append audit_meta write
+	// once the keying-epoch row exists. Guarded by auditMu (AppendAudit is
+	// serialized through it).
+	keyedEpochRecorded bool
 }
 
 type Domain struct {

@@ -149,8 +149,10 @@ func (s *Store) AppendAudit(ctx context.Context, ev AuditEvent) (AuditEvent, err
 	// Record the keying epoch: the seq of the first keyed row. ON CONFLICT
 	// DO NOTHING means only that first keyed write sets it; later writes
 	// are no-ops. VerifyAudit uses it to reject any unkeyed row at or
-	// after keying began, which a forged downgrade cannot evade.
-	if s.auditKeyring != nil {
+	// after keying began, which a forged downgrade cannot evade. The
+	// in-memory flag skips this write after the row is known to exist, so
+	// only the first keyed append per process pays for it.
+	if s.auditKeyring != nil && !s.keyedEpochRecorded {
 		if _, err := tx.ExecContext(ctx,
 			s.rebind(`INSERT INTO audit_meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO NOTHING`),
 			auditMetaKeyedFromSeq, seq,
@@ -161,6 +163,13 @@ func (s *Store) AppendAudit(ctx context.Context, ev AuditEvent) (AuditEvent, err
 
 	if err := tx.Commit(); err != nil {
 		return AuditEvent{}, fmt.Errorf("audit: commit: %w", err)
+	}
+	// After a committed keyed append the epoch row is guaranteed present
+	// (we just inserted it or it already existed), so later appends can
+	// skip the audit_meta write. Set only post-commit so a rolled-back tx
+	// doesn't leave the flag ahead of the persisted row.
+	if s.auditKeyring != nil {
+		s.keyedEpochRecorded = true
 	}
 	return ev, nil
 }
