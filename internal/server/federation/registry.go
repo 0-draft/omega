@@ -157,6 +157,17 @@ func NewRegistry(ownTD spiffeid.TrustDomain, ownBundle []byte, peers []PeerConfi
 // transport verification.
 func buildPeerClient(p PeerConfig) (*http.Client, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
+	// A bundle endpoint is a fixed path; it must never redirect us onto a
+	// plaintext leg, which would bypass the per-peer TLS verification that
+	// lives on the Transport. Refuse any redirect that leaves https. (A
+	// pure network MITM cannot forge this over the authenticated channel,
+	// but a malicious/misconfigured peer self-downgrade can.)
+	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing redirect to non-https %q (federation bundle endpoint must stay on https)", req.URL.Redacted())
+		}
+		return nil
+	}
 	u, err := url.Parse(p.URL)
 	if err != nil {
 		return nil, fmt.Errorf("parse url %q: %w", p.URL, err)
