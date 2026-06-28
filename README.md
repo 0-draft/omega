@@ -5,9 +5,9 @@
 
 > SPIFFE-compatible Workload Identity + OpenID AuthZEN 1.0 Authorization in a single binary. Apache-2.0.
 
-**Ω - the last letter, and the last identity platform you'll need to deploy.**
+**Ω - the authorization & audit layer for SPIFFE identities.**
 
-Running workload identity today means stitching four projects together: SPIRE for identity, OPA / Cedar / OpenFGA / SpiceDB for authorization, an OIDC provider for federation, and a separate audit pipeline. Each speaks its own wire format and ships its own operator. Omega closes those seams in one binary: SPIFFE-native identity, an AuthZEN 1.0 PDP, SPIFFE federation, and a tamper-evident audit log behind one HTTP API and one Workload API socket.
+Omega makes the SPIFFE ID a first-class AuthZEN subject — every Service, Human, and AI Agent decision evaluated against one PDP and recorded in one tamper-evident audit trail. Where SPIFFE/SPIRE stops at issuance, Omega adds the authorization and audit layer on top: SPIFFE-native identity (X.509-SVID / JWT-SVID, Workload API), an AuthZEN 1.0 PDP (Cedar), SPIFFE federation, and the audit log behind one HTTP API and one Workload API socket — SPIRE-compatible, Apache-2.0.
 
 ## Why
 
