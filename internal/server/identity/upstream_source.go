@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -17,6 +18,12 @@ import (
 // layer on top of it.
 var ErrIssuanceUnsupported = errors.New("identity: omega is in spire-upstream mode and does not issue or locally validate SVIDs; obtain them from the upstream SPIFFE issuer")
 
+// ErrUpstreamJWTNotConfigured is returned by the JWT-SVID validation
+// methods when omega is in spire-upstream mode but no upstream JWKS was
+// supplied (X.509-only upstream consumption). Supply the upstream JWT
+// bundle via --identity-source-jwt-bundle to enable JWT-SVID validation.
+var ErrUpstreamJWTNotConfigured = errors.New("identity: upstream JWT-SVID validation is not configured (set --identity-source-jwt-bundle to the upstream JWKS)")
+
 // upstreamSource is the non-issuing identity source: Omega consumes
 // identities minted by an upstream SPIFFE trust domain (SPIRE / Istio)
 // rather than issuing its own. It carries the upstream trust domain and
@@ -25,29 +32,53 @@ var ErrIssuanceUnsupported = errors.New("identity: omega is in spire-upstream mo
 // ErrIssuanceUnsupported, which the API layer surfaces as 501 on the
 // issuance routes.
 //
-// JWT-SVID authorities are not consumed yet: JWTBundle serves an empty
-// JWKS so the combined SPIFFE bundle endpoint stays valid, and upstream
-// JWT-SVID validation is a follow-up.
+// When an upstream JWKS is supplied it also carries the upstream JWT-SVID
+// signing keys: JWTBundle serves them at /v1/jwt/bundle so agents pull and
+// validate upstream JWT-SVIDs locally, and the validation methods verify a
+// presented token against them. Without an upstream JWKS (X.509-only
+// consumption) JWTBundle serves an empty JWKS and validation returns
+// ErrUpstreamJWTNotConfigured.
 type upstreamSource struct {
 	td         spiffeid.TrustDomain
 	issuerURL  string
 	x509Bundle []byte
+
+	// jwtBundle is the canonical JWKS served at /v1/jwt/bundle: the
+	// upstream JWT signing keys, or emptyJWKS when none were supplied.
+	jwtBundle []byte
+	// jwtKeys maps each upstream signing key's kid to its public key for
+	// JWT-SVID verification. nil / empty when no upstream JWKS was supplied.
+	jwtKeys map[string]*ecdsa.PublicKey
 }
 
-// emptyJWKS is the JWT bundle served in spire-upstream mode until upstream
-// JWT-SVID authorities are consumed. A const string (not a package-level
-// []byte) so the shared value cannot be mutated by a caller.
+// emptyJWKS is the JWT bundle served in spire-upstream mode when no
+// upstream JWKS was supplied (X.509-only consumption). A const string (not
+// a package-level []byte) so the shared value cannot be mutated by a caller.
 const emptyJWKS = `{"keys":[]}`
 
-// NewUpstreamSource builds a non-issuing Source for trustDomain whose
+// NewUpstreamSource builds an X.509-only non-issuing Source for
+// trustDomain. It is equivalent to NewUpstreamSourceWithJWT with no
+// upstream JWKS: JWTBundle serves an empty JWKS and JWT-SVID validation
+// returns ErrUpstreamJWTNotConfigured.
+func NewUpstreamSource(trustDomain, issuerURL string, x509BundlePEM []byte) (Source, error) {
+	return NewUpstreamSourceWithJWT(trustDomain, issuerURL, x509BundlePEM, nil)
+}
+
+// NewUpstreamSourceWithJWT builds a non-issuing Source for trustDomain whose
 // X.509 trust bundle is the PEM in x509BundlePEM (the upstream SPIRE /
 // Istio root, the same material an operator would wire into --client-ca).
 // issuerURL is the OIDC issuer advertised at /.well-known/openid-configuration
-// (empty disables discovery). It validates that the trust domain parses,
-// the issuer URL normalizes, and the bundle contains at least one CA
-// certificate. The bundle is copied so a later mutation of the caller's
-// slice cannot alter the stored trust anchors.
-func NewUpstreamSource(trustDomain, issuerURL string, x509BundlePEM []byte) (Source, error) {
+// (empty disables discovery). jwtJWKS is the upstream JWT bundle (an RFC
+// 7517 JWKS); when non-empty its signing keys are served at /v1/jwt/bundle
+// and used to validate upstream JWT-SVIDs. A nil/empty jwtJWKS leaves JWT
+// validation disabled (X.509-only consumption).
+//
+// It validates that the trust domain parses, the issuer URL normalizes, the
+// X.509 bundle contains at least one CA certificate, and - when supplied -
+// the JWKS holds at least one usable signing key. Both bundles are copied so
+// a later mutation of the caller's slices cannot alter the stored trust
+// material.
+func NewUpstreamSourceWithJWT(trustDomain, issuerURL string, x509BundlePEM, jwtJWKS []byte) (Source, error) {
 	td, err := spiffeid.TrustDomainFromString(trustDomain)
 	if err != nil {
 		return nil, fmt.Errorf("identity: upstream trust domain: %w", err)
@@ -63,7 +94,17 @@ func NewUpstreamSource(trustDomain, issuerURL string, x509BundlePEM []byte) (Sou
 	if !hasCA {
 		return nil, errors.New("identity: upstream bundle contained no CA certificate (a trust bundle must hold trust anchors)")
 	}
-	return &upstreamSource{td: td, issuerURL: issuer, x509Bundle: append([]byte(nil), x509BundlePEM...)}, nil
+	keys, canonicalJWKS, err := parseUpstreamJWKS(jwtJWKS)
+	if err != nil {
+		return nil, err
+	}
+	return &upstreamSource{
+		td:         td,
+		issuerURL:  issuer,
+		x509Bundle: append([]byte(nil), x509BundlePEM...),
+		jwtBundle:  canonicalJWKS,
+		jwtKeys:    keys,
+	}, nil
 }
 
 // validateCABundle scans the CERTIFICATE blocks in pemBytes. It fails
@@ -100,10 +141,12 @@ func (u *upstreamSource) IssuerURL() string                 { return u.issuerURL
 // the stored bundle through the returned slice.
 func (u *upstreamSource) BundlePEM() []byte { return append([]byte(nil), u.x509Bundle...) }
 
-// JWTBundle returns an empty JWKS so the combined SPIFFE bundle document
-// stays well-formed; consuming upstream JWT-SVID authorities is a
-// follow-up.
-func (u *upstreamSource) JWTBundle() ([]byte, error) { return []byte(emptyJWKS), nil }
+// JWTBundle returns a copy of the upstream JWKS (the upstream JWT signing
+// keys), or an empty JWKS when no upstream JWT bundle was supplied. The copy
+// keeps callers from mutating the stored bundle through the returned slice.
+func (u *upstreamSource) JWTBundle() ([]byte, error) {
+	return append([]byte(nil), u.jwtBundle...), nil
+}
 
 func (u *upstreamSource) IssueSVID(spiffeid.ID, *x509.CertificateRequest) (*SVID, error) {
 	return nil, ErrIssuanceUnsupported
@@ -114,15 +157,3 @@ func (u *upstreamSource) IssueJWTSVID(spiffeid.ID, []string, time.Duration, map[
 }
 
 func (u *upstreamSource) JWTKeyID() (string, error) { return "", ErrIssuanceUnsupported }
-
-func (u *upstreamSource) ValidateJWTSVID(string, string) (spiffeid.ID, error) {
-	return spiffeid.ID{}, ErrIssuanceUnsupported
-}
-
-func (u *upstreamSource) ValidatePresentedCertBinding(string, string, *x509.Certificate) (spiffeid.ID, error) {
-	return spiffeid.ID{}, ErrIssuanceUnsupported
-}
-
-func (u *upstreamSource) ParseJWTSVIDClaims(string) (spiffeid.ID, map[string]any, error) {
-	return spiffeid.ID{}, nil, ErrIssuanceUnsupported
-}
