@@ -53,6 +53,11 @@ func parseUpstreamJWKS(jwksJSON []byte) (map[string]*ecdsa.PublicKey, []byte, er
 		if k.Kty != "EC" || k.Crv != "P-256" {
 			return nil, nil, fmt.Errorf("identity: upstream JWKS key %d is %s/%s; only EC/P-256 (ES256) is supported", i, k.Kty, k.Crv)
 		}
+		// "use" is optional in a JWK, but when present it must say "sig":
+		// an encryption key ("enc") must never verify signatures.
+		if k.Use != "" && k.Use != "sig" {
+			return nil, nil, fmt.Errorf("identity: upstream JWKS key %d has use %q; only \"sig\" keys verify signatures", i, k.Use)
+		}
 		if k.Kid == "" {
 			return nil, nil, fmt.Errorf("identity: upstream JWKS key %d has no kid (a kid is required to select the verification key)", i)
 		}
@@ -135,6 +140,9 @@ func (u *upstreamSource) validateUpstreamJWT(token string, aud *string) (spiffei
 		return spiffeid.ID{}, nil, errors.New("jwt has no header")
 	}
 	kid := parsed.Headers[0].KeyID
+	if kid == "" {
+		return spiffeid.ID{}, nil, errors.New("jwt has no kid header")
+	}
 	pub, ok := u.jwtKeys[kid]
 	if !ok {
 		return spiffeid.ID{}, nil, fmt.Errorf("jwt signed by unknown kid %q", kid)
@@ -143,6 +151,14 @@ func (u *upstreamSource) validateUpstreamJWT(token string, aud *string) (spiffei
 	var rawClaims map[string]any
 	if err := parsed.Claims(pub, &std, &rawClaims); err != nil {
 		return spiffeid.ID{}, nil, fmt.Errorf("verify jwt: %w", err)
+	}
+	// SPIFFE JWT-SVID requires exp; go-jose's ValidateWithLeeway does not
+	// reject a token that simply omits it, which would otherwise validate
+	// indefinitely. Enforce its presence explicitly for these external
+	// tokens. (iat is optional per the SPIFFE JWT-SVID spec, so it is not
+	// required here.)
+	if std.Expiry == nil {
+		return spiffeid.ID{}, nil, errors.New("jwt is missing the required exp claim")
 	}
 	expected := jwt.Expected{Time: time.Now()}
 	if aud != nil {
