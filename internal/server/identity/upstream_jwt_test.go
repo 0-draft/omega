@@ -1,12 +1,19 @@
 package identity_test
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
 	"github.com/kanywst/omega/internal/server/identity"
@@ -138,6 +145,7 @@ func TestNewUpstreamSourceWithJWTRejectsBadJWKS(t *testing.T) {
 		"missing kid":     []byte(`{"keys":[{"kty":"EC","crv":"P-256","x":"AA","y":"AA"}]}`),
 		"bad coordinate":  []byte(`{"keys":[{"kty":"EC","crv":"P-256","kid":"a","x":"!!","y":"!!"}]}`),
 		"off curve":       []byte(`{"keys":[{"kty":"EC","crv":"P-256","kid":"a","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","y":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]}`),
+		"encryption key":  []byte(`{"keys":[{"kty":"EC","crv":"P-256","use":"enc","kid":"a","x":"AA","y":"AA"}]}`),
 	}
 	for name, jwks := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -174,4 +182,82 @@ func keyCount(t *testing.T, jwks []byte) int {
 		t.Fatalf("parse served JWKS: %v", err)
 	}
 	return len(set.Keys)
+}
+
+// ecSigningKey generates an EC P-256 key and the single-key JWKS that
+// advertises it, so a test can sign tokens with full control over the
+// claims and headers (which the issuing Authority does not expose).
+func ecSigningKey(t *testing.T, kid string) (*ecdsa.PrivateKey, []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	// SEC1 uncompressed point (0x04 || X || Y) via crypto/ecdh, avoiding the
+	// deprecated ecdsa.PublicKey.X / .Y fields.
+	ecdhPub, err := key.PublicKey.ECDH()
+	if err != nil {
+		t.Fatalf("ecdh: %v", err)
+	}
+	point := ecdhPub.Bytes()
+	jwks := fmt.Sprintf(`{"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":%q,"x":%q,"y":%q}]}`,
+		kid,
+		base64.RawURLEncoding.EncodeToString(point[1:33]),
+		base64.RawURLEncoding.EncodeToString(point[33:65]))
+	return key, []byte(jwks)
+}
+
+func signClaims(t *testing.T, key *ecdsa.PrivateKey, kid string, setKid bool, claims map[string]any) string {
+	t.Helper()
+	opts := (&jose.SignerOptions{}).WithType("JWT")
+	if setKid {
+		opts = opts.WithHeader("kid", kid)
+	}
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key}, opts)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	tok, err := jwt.Signed(signer).Claims(claims).Serialize()
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return tok
+}
+
+func TestUpstreamSourceRejectsTokenMissingExp(t *testing.T) {
+	const td = "upstream.example"
+	key, jwks := ecSigningKey(t, "k1")
+	src, err := identity.NewUpstreamSourceWithJWT(td, "", upstreamBundle(t), jwks)
+	if err != nil {
+		t.Fatalf("NewUpstreamSourceWithJWT: %v", err)
+	}
+	// A validly-signed token whose only flaw is a missing exp claim: it
+	// must be rejected rather than treated as valid indefinitely.
+	tok := signClaims(t, key, "k1", true, map[string]any{
+		"sub": "spiffe://" + td + "/workload/web",
+		"aud": []string{"https://api.example.com"},
+		"iat": time.Now().Unix(),
+	})
+	if _, err := src.ValidateJWTSVID(tok, "https://api.example.com"); err == nil {
+		t.Fatal("expected validation to fail for a token missing exp")
+	}
+}
+
+func TestUpstreamSourceRejectsTokenMissingKidHeader(t *testing.T) {
+	const td = "upstream.example"
+	key, jwks := ecSigningKey(t, "k1")
+	src, err := identity.NewUpstreamSourceWithJWT(td, "", upstreamBundle(t), jwks)
+	if err != nil {
+		t.Fatalf("NewUpstreamSourceWithJWT: %v", err)
+	}
+	// Signed by the trusted key but with no kid header: validation cannot
+	// select a key by trial and must fail closed.
+	tok := signClaims(t, key, "k1", false, map[string]any{
+		"sub": "spiffe://" + td + "/workload/web",
+		"aud": []string{"https://api.example.com"},
+		"exp": time.Now().Add(time.Minute).Unix(),
+	})
+	if _, err := src.ValidateJWTSVID(tok, "https://api.example.com"); err == nil {
+		t.Fatal("expected validation to fail for a token with no kid header")
+	}
 }
