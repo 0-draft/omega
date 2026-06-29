@@ -67,17 +67,19 @@ func TestUpstreamSourceRefusesIssuance(t *testing.T) {
 	if _, err := src.IssueJWTSVID(src.TrustDomain().ID(), nil, 0, nil); !errors.Is(err, identity.ErrIssuanceUnsupported) {
 		t.Fatalf("IssueJWTSVID err = %v, want ErrIssuanceUnsupported", err)
 	}
-	if _, _, err := src.ParseJWTSVIDClaims("anything"); !errors.Is(err, identity.ErrIssuanceUnsupported) {
-		t.Fatalf("ParseJWTSVIDClaims err = %v, want ErrIssuanceUnsupported", err)
-	}
 	if _, err := src.JWTKeyID(); !errors.Is(err, identity.ErrIssuanceUnsupported) {
 		t.Fatalf("JWTKeyID err = %v, want ErrIssuanceUnsupported", err)
 	}
-	if _, err := src.ValidateJWTSVID("token", "aud"); !errors.Is(err, identity.ErrIssuanceUnsupported) {
-		t.Fatalf("ValidateJWTSVID err = %v, want ErrIssuanceUnsupported", err)
+	// Without an upstream JWKS the source is X.509-only: JWT-SVID validation
+	// is not refused as issuance but reported as not configured.
+	if _, _, err := src.ParseJWTSVIDClaims("anything"); !errors.Is(err, identity.ErrUpstreamJWTNotConfigured) {
+		t.Fatalf("ParseJWTSVIDClaims err = %v, want ErrUpstreamJWTNotConfigured", err)
 	}
-	if _, err := src.ValidatePresentedCertBinding("token", "aud", nil); !errors.Is(err, identity.ErrIssuanceUnsupported) {
-		t.Fatalf("ValidatePresentedCertBinding err = %v, want ErrIssuanceUnsupported", err)
+	if _, err := src.ValidateJWTSVID("token", "aud"); !errors.Is(err, identity.ErrUpstreamJWTNotConfigured) {
+		t.Fatalf("ValidateJWTSVID err = %v, want ErrUpstreamJWTNotConfigured", err)
+	}
+	if _, err := src.ValidatePresentedCertBinding("token", "aud", nil); !errors.Is(err, identity.ErrUpstreamJWTNotConfigured) {
+		t.Fatalf("ValidatePresentedCertBinding err = %v, want ErrUpstreamJWTNotConfigured", err)
 	}
 }
 

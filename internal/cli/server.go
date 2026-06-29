@@ -94,6 +94,7 @@ func newServerCommand() *cobra.Command {
 		oidcIdPs                []string
 		identitySource          string
 		identitySourceBundle    string
+		identitySourceJWTBundle string
 		caBackend               string
 		caVaultPKIAddr          string
 		caVaultPKIToken         string
@@ -211,11 +212,25 @@ func newServerCommand() *cobra.Command {
 				if rerr != nil {
 					return fmt.Errorf("identity-source-bundle: %w", rerr)
 				}
-				ca, err = identity.NewUpstreamSource(strings.TrimSpace(trustDomain), strings.TrimSpace(issuerURL), bundlePEM)
+				// --identity-source-jwt-bundle is optional: with it Omega
+				// serves the upstream JWT signing keys at /v1/jwt/bundle so
+				// agents validate upstream JWT-SVIDs locally; without it
+				// upstream consumption stays X.509-only.
+				var jwtJWKS []byte
+				jwtMode := "x509-only"
+				if jwtPath := strings.TrimSpace(identitySourceJWTBundle); jwtPath != "" {
+					// #nosec G304 -- jwtPath is operator-supplied via --identity-source-jwt-bundle, not user input.
+					jwtJWKS, rerr = os.ReadFile(jwtPath)
+					if rerr != nil {
+						return fmt.Errorf("identity-source-jwt-bundle: %w", rerr)
+					}
+					jwtMode = "jwt=" + jwtPath
+				}
+				ca, err = identity.NewUpstreamSourceWithJWT(strings.TrimSpace(trustDomain), strings.TrimSpace(issuerURL), bundlePEM, jwtJWKS)
 				if err != nil {
 					return fmt.Errorf("identity-source: %w", err)
 				}
-				fmt.Fprintf(os.Stderr, "omega server: identity-source=spire-upstream trust-domain=%s bundle=%s (issuance disabled; serving authz + audit over upstream-issued SVIDs)\n", ca.TrustDomain(), bundlePath)
+				fmt.Fprintf(os.Stderr, "omega server: identity-source=spire-upstream trust-domain=%s bundle=%s %s (issuance disabled; serving authz + audit over upstream-issued SVIDs)\n", ca.TrustDomain(), bundlePath, jwtMode)
 			default:
 				return fmt.Errorf("--identity-source=%q is not recognised (supported: %s, %s)", identitySource, identity.SourceBuiltIn, identity.SourceSPIREUpstream)
 			}
@@ -468,6 +483,8 @@ func newServerCommand() *cobra.Command {
 		"where SPIFFE identities come from. 'built-in' (default) means omega issues its own SVIDs via the --ca-backend CA. 'spire-upstream' means omega consumes identities minted by an upstream SPIRE/Istio trust domain (no local CA; issuance routes return 501) and serves only the authz + audit layer; it requires --identity-source-bundle and --trust-domain set to the upstream domain.")
 	cmd.Flags().StringVar(&identitySourceBundle, "identity-source-bundle", "",
 		"path to the upstream trust domain's X.509 bundle (PEM), e.g. the SPIRE/Istio root. Required when --identity-source=spire-upstream; this is the same trust material an operator wires into --client-ca.")
+	cmd.Flags().StringVar(&identitySourceJWTBundle, "identity-source-jwt-bundle", "",
+		"path to the upstream trust domain's JWT bundle (JWKS, EC/P-256 keys). Optional with --identity-source=spire-upstream; when set, omega serves these keys at /v1/jwt/bundle so agents validate upstream JWT-SVIDs locally. Without it, upstream consumption is X.509-only.")
 	cmd.Flags().StringVar(&caBackend, "ca-backend", "disk",
 		"CA backend Kind. 'disk' (default) generates a self-signed root under --data-dir. 'vault-pki' delegates X.509-SVID signing to a Vault PKI engine; 'step-ca' delegates to Smallstep step-ca's /1.0/sign endpoint with a JWK provisioner OTT. For all non-disk backends the root key never sits on omega's disk while JWT-SVID signing stays local (see ADR 0005).")
 	cmd.Flags().StringVar(&caVaultPKIAddr, "ca-vault-pki-addr", "",
