@@ -247,8 +247,11 @@ func (a *localAuthority) ValidatePresentedCertBinding(token, audience string, pr
 	if err != nil {
 		return spiffeid.ID{}, fmt.Errorf("parse jwt: %w", err)
 	}
+	// ValidateJWTSVID above already verified this exact token's signature;
+	// reading the claims to inspect cnf does not need to re-run the (costly)
+	// ECDSA verification.
 	var raw map[string]any
-	if err := parsed.Claims(a.cert.PublicKey, &raw); err != nil {
+	if err := parsed.UnsafeClaimsWithoutVerification(&raw); err != nil {
 		return spiffeid.ID{}, fmt.Errorf("read claims: %w", err)
 	}
 	cnfVal, present := raw["cnf"]
